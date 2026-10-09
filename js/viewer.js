@@ -3,6 +3,7 @@ import { pdfjs, openPdf, getPage, pageList, pageLinks } from './pdfdoc.js';
 import * as S from './store.js';
 import { h, clear, icon, catInfo, uid } from './util.js';
 import { registerTextLayer, unregisterTextLayer } from './textsel.js';
+import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick } from './notebook.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -58,12 +59,14 @@ export class Viewer {
 
   async open(doc, at) {
     this.doc = doc;
-    this.hd = await openPdf(doc);
+    this.clearSelection();
+    this.hd = isNotebook(doc) ? null : await openPdf(doc);
     this.anns = await S.annots(doc.id);
-    this.pages = pageList(doc, this.hd);
+    this.pages = this.listPages();
     this.hist = [];
     this.build();
-    const key = (at && at.key) || doc.lastKey || 'p1';
+    let key = (at && at.key) || doc.lastKey || (this.pages[0] && this.pages[0].key);
+    if (!this.slots.has(key)) key = this.pages[0] && this.pages[0].key;
     const y = at ? (at.y || 0) : (doc.lastY || 0);
     requestAnimationFrame(() => this.goTo(key, y, { noHist: true, exact: !at }));
     doc.opened = Date.now();
@@ -73,10 +76,13 @@ export class Viewer {
   // reconstrói a lista (depois de inserir/remover página em branco)
   async refreshPages() {
     const k = this.currentKey();
-    this.pages = pageList(this.doc, this.hd);
+    this.pages = this.listPages();
     this.build();
-    this.goTo(k, 0, { noHist: true });
+    this.goTo(this.slots.has(k) ? k : this.pages[0].key, 0, { noHist: true });
   }
+
+  listPages() { return isNotebook(this.doc) ? nbPageList(this.doc) : pageList(this.doc, this.hd); }
+  get isNb() { return isNotebook(this.doc); }
 
   fitScale() {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
@@ -94,22 +100,24 @@ export class Viewer {
     this.applyMode();
     for (const p of this.pages) {
       const head = h('div.slot-head',
-        h('span.pl', p.kind === 'pdf' ? 'p. ' + p.n : 'Página em branco'),
+        h('span.pl', pageTitle(p)),
         h('span.bm'),
         h('button.ibtn.small', { type: 'button', 'aria-label': 'Opções da página', onclick: e => this.app.pageMenu(this, p, e.clientX, e.clientY) }, icon('more', 18)));
-      const pg = h('div.pg' + (p.kind === 'blank' ? '.blank' : ''));
+      const pg = h('div.pg' + (p.kind === 'blank' ? '.blank' : '') + (p.kind === 'nb' ? '.nb.tpl-' + (p.tpl || 'blank') : ''));
       const mg = h('div.mg');
       const svg = sv('svg', { class: 'ov' });
       const live = sv('g', { class: 'live' });
+      const tbl = h('div.tbl');
       const slot = h('div.slot', pg, mg);
       slot.appendChild(svg);
+      slot.appendChild(tbl);
       svg.appendChild(sv('g', { class: 'ann' }));
       svg.appendChild(live);
       const wrap = h('div.slotwrap', head, slot);
       wrap.dataset.key = p.key;
       slot.dataset.key = p.key;
       this.pagesEl.appendChild(wrap);
-      const s = { p, wrap, slot, pg, mg, svg, live, head, rendered: 0, renderTask: null };
+      const s = { p, wrap, slot, pg, mg, svg, live, head, tbl, rendered: 0, renderTask: null };
       this.slots.set(p.key, s);
       this.sizeSlot(s);
       this.io.observe(wrap);
@@ -137,6 +145,8 @@ export class Viewer {
     s.svg.setAttribute('width', (p.w + mw) * sc);
     s.svg.setAttribute('height', p.h * sc);
     s.pg.style.setProperty('--scale-factor', sc);
+    s.slot.style.setProperty('--s', sc);
+    if (this.sel && this.sel.s === s) this.drawSelection();
   }
 
   relayout(keepPos) {
@@ -229,6 +239,11 @@ export class Viewer {
   redrawOverlays(pageKey) {
     S.annots(this.doc.id).then(list => {
       this.anns = list;
+      if (this.isNb) {   // a numeração das equações pode mudar em outras páginas
+        this.num = numbering(this.doc, list);
+        for (const s of this.slots.values()) this.drawBoxes(s);
+      }
+      if (this.sel) this.refreshSelection();
       if (pageKey && this.slots.has(pageKey)) this.drawOverlay(this.slots.get(pageKey));
       else for (const s of this.slots.values()) this.drawOverlay(s);
     });
@@ -240,6 +255,12 @@ export class Viewer {
     const g = s.svg.querySelector('g.ann');
     clear(g);
     const list = this.annsOf(s.p.key);
+    for (const a of list.filter(a => a.kind === 'img')) {
+      const url = fileUrlSync(a.fileId);
+      if (!url) { fileUrl(a.fileId).then(u => { if (u) this.drawOverlay(s); }); continue; }
+      const im = sv('image', { href: url, x: a.x, y: a.y, width: a.w, height: a.h, preserveAspectRatio: 'none', 'data-id': a.id });
+      g.appendChild(im);
+    }
     const hl = list.filter(a => a.kind === 'hl');
     for (const a of hl) {
       const ci = catInfo(a.cat);
@@ -271,7 +292,7 @@ export class Viewer {
       g.appendChild(p);
     }
     for (const a of list.filter(a => a.kind === 'note')) {
-      const n = sv('g', { class: 'notepin', transform: `translate(${a.x} ${a.y})` });
+      const n = sv('g', { class: 'notepin', transform: `translate(${a.x} ${a.y})`, 'data-id': a.id });
       n.appendChild(sv('circle', { cx: 0, cy: 0, r: 8, fill: a.audioId && !a.text ? '#1D5A8A' : '#fff', stroke: '#1D5A8A', 'stroke-width': 1.4 }));
       const t = sv('text', { x: 0, y: 3.2, 'text-anchor': 'middle', 'font-size': 9, fill: a.audioId && !a.text ? '#fff' : '#1D5A8A', 'font-weight': 700 });
       t.textContent = a.audioId ? '♪' : '✎';
@@ -288,6 +309,144 @@ export class Viewer {
       m.appendChild(t);
       g.appendChild(m);
     }
+    this.drawBoxes(s);
+  }
+
+  // caixas de texto (Markdown + LaTeX) dos cadernos
+  drawBoxes(s) {
+    if (!this.isNb) return;
+    if (!this.num) this.num = numbering(this.doc, this.anns || []);
+    const editing = this.app.textEditor && this.app.textEditor.cur && this.app.textEditor.cur.a;
+    const keep = editing && editing.pageKey === s.p.key ? s.tbl.querySelector(`[data-id="${editing.id}"]`) : null;
+    [...s.tbl.children].forEach(c => { if (c !== keep) c.remove(); });
+    for (const a of this.annsOf(s.p.key).filter(a => a.kind === 'tbox')) {
+      if (keep && a.id === editing.id) continue;
+      const el = h('div.tbox.md', { 'data-id': a.id });
+      el.style.left = `calc(var(--s) * ${a.x}px)`;
+      el.style.top = `calc(var(--s) * ${a.y}px)`;
+      el.style.width = `calc(var(--s) * ${a.w}px)`;
+      el.style.fontSize = `calc(var(--s) * ${a.size || TEXT_SIZE}px)`;
+      el.innerHTML = renderBoxHtml(a, this.num);
+      el.querySelectorAll('a[href]').forEach(ln => ln.addEventListener('click', ev => { ev.preventDefault(); this.app.openLink && this.app.openLink(ln.getAttribute('href')); }));
+      el.querySelectorAll('input[type=checkbox]').forEach((cb, i) => {
+        cb.disabled = false;
+        cb.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); onTaskClick(a, i); });
+      });
+      s.tbl.appendChild(el);
+    }
+  }
+
+  boxEl(s, id) { return s.tbl.querySelector(`[data-id="${id}"]`); }
+
+  // ----- seleção de objetos (laço, imagem tocada) -----
+  bboxOf(s, ids) {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const a of this.annsOf(s.p.key)) {
+      if (!ids.has(a.id)) continue;
+      if (a.kind === 'ink') for (const p of a.pts) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+      else if (a.kind === 'img') { x0 = Math.min(x0, a.x); y0 = Math.min(y0, a.y); x1 = Math.max(x1, a.x + a.w); y1 = Math.max(y1, a.y + a.h); }
+      else if (a.kind === 'tbox') { const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 20; x0 = Math.min(x0, a.x); y0 = Math.min(y0, a.y); x1 = Math.max(x1, a.x + a.w); y1 = Math.max(y1, a.y + hh); }
+      else if (a.kind === 'note') { x0 = Math.min(x0, a.x - 9); y0 = Math.min(y0, a.y - 9); x1 = Math.max(x1, a.x + 9); y1 = Math.max(y1, a.y + 9); }
+    }
+    if (x0 > x1) return null;
+    const pad = 6;
+    return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
+  }
+
+  setSelection(s, ids) {
+    this.clearSelection();
+    if (!ids.size) return;
+    this.sel = { s, ids, bbox: this.bboxOf(s, ids) };
+    if (!this.sel.bbox) { this.sel = null; return; }
+    this.drawSelection();
+    this.applyMode();
+    this.app.onObjectSelection && this.app.onObjectSelection(this, this.sel);
+  }
+
+  refreshSelection() {
+    if (!this.sel) return;
+    const ids = new Set([...this.sel.ids].filter(id => (this.anns || []).some(a => a.id === id)));
+    if (!ids.size) { this.clearSelection(); return; }
+    this.sel.ids = ids; this.sel.bbox = this.bboxOf(this.sel.s, ids);
+    this.drawSelection();
+  }
+
+  drawSelection() {
+    const old = this.el.querySelectorAll('.selbox'); old.forEach(e => e.remove());
+    if (!this.sel || !this.sel.bbox) return;
+    const [x, y, w, hh] = this.sel.bbox;
+    const g = sv('g', { class: 'selbox' });
+    g.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'selrect' }));
+    const single = this.sel.ids.size === 1 && this.annsOf(this.sel.s.p.key).find(a => this.sel.ids.has(a.id) && (a.kind === 'img' || a.kind === 'tbox'));
+    if (single) g.appendChild(sv('rect', { x: x + w - 7, y: y + hh - 7, width: 14, height: 14, class: 'selhandle' }));
+    this.sel.single = single || null;
+    this.sel.s.live.appendChild(g);
+  }
+
+  clearSelection() {
+    if (this.el) this.el.querySelectorAll('.selbox').forEach(e => e.remove());
+    const had = !!this.sel;
+    this.sel = null;
+    if (had) this.applyMode();
+    if (had && this.app.onObjectSelection) this.app.onObjectSelection(this, null);
+  }
+
+  inSel(hit, handleOnly) {
+    if (!this.sel || hit.s !== this.sel.s) return null;
+    const [x, y, w, hh] = this.sel.bbox;
+    if (this.sel.single && Math.abs(hit.x - (x + w)) < 12 / this.scale + 6 && Math.abs(hit.y - (y + hh)) < 12 / this.scale + 6) return 'resize';
+    if (handleOnly) return null;
+    return hit.x >= x && hit.x <= x + w && hit.y >= y && hit.y <= y + hh ? 'move' : null;
+  }
+
+  lassoSelect(s, poly) {
+    const inside = (px, py) => {
+      let c = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i], [xj, yj] = poly[j];
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi + 1e-9) + xi)) c = !c;
+      }
+      return c;
+    };
+    const ids = new Set();
+    for (const a of this.annsOf(s.p.key)) {
+      if (a.kind === 'ink') { const n = a.pts.filter(p => inside(p[0], p[1])).length; if (n >= a.pts.length * 0.6) ids.add(a.id); }
+      else if (a.kind === 'img' && inside(a.x + a.w / 2, a.y + a.h / 2)) ids.add(a.id);
+      else if (a.kind === 'tbox') { const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 20; if (inside(a.x + a.w / 2, a.y + Math.min(hh / 2, 20))) ids.add(a.id); }
+      else if (a.kind === 'note' && inside(a.x, a.y)) ids.add(a.id);
+    }
+    return ids;
+  }
+
+  previewMove(dx, dy) {
+    const { s, ids } = this.sel;
+    for (const id of ids) {
+      const e = s.svg.querySelector(`g.ann [data-id="${id}"]`);
+      if (e) e.setAttribute('transform', (e.dataset.base0 !== undefined ? e.dataset.base0 : (e.dataset.base0 = e.getAttribute('transform') || '')) + ` translate(${dx} ${dy})`);
+      const b = this.boxEl(s, id);
+      if (b) b.style.transform = `translate(${dx * this.scale}px, ${dy * this.scale}px)`;
+    }
+    const sb = s.live.querySelector('.selbox');
+    if (sb) sb.setAttribute('transform', `translate(${dx} ${dy})`);
+  }
+
+  async commitMove(dx, dy) {
+    const { s, ids } = this.sel;
+    const list = this.annsOf(s.p.key).filter(a => ids.has(a.id));
+    const changed = list.map(a => {
+      const c = JSON.parse(JSON.stringify(a));
+      if (c.kind === 'ink') c.pts = c.pts.map(p => [+(p[0] + dx).toFixed(2), +(p[1] + dy).toFixed(2), p[2], p[3]]);
+      else { c.x += dx; c.y += dy; }
+      return c;
+    });
+    await S.putAnnotsGroup(changed);
+  }
+
+  async commitResize(a, nw) {
+    const c = JSON.parse(JSON.stringify(a));
+    nw = Math.max(30, nw);
+    if (c.kind === 'img') { c.h = c.h * nw / c.w; c.w = nw; } else c.w = nw;
+    await S.putAnnotsGroup([c]);
   }
 
   updateBookmarks() {
@@ -296,7 +455,7 @@ export class Viewer {
       const b = bms.find(x => x.key === s.p.key);
       const el = s.head.querySelector('.bm');
       el.textContent = b ? ('🔖 ' + (b.label || 'marcador')) : '';
-      s.head.querySelector('.pl').textContent = s.p.kind === 'pdf' ? 'p. ' + s.p.n : 'Página em branco';
+      s.head.querySelector('.pl').textContent = pageTitle(s.p);
     }
   }
 
@@ -348,8 +507,10 @@ export class Viewer {
   // ----- modos e entrada -----
   applyMode() {
     const t = this.app.tool;
-    const draw = t !== 'read';
+    const draw = t !== 'read' || !!this.sel;
     this.el.classList.toggle('drawmode', draw);
+    this.el.classList.toggle('textmode', t === 'text');
+    this.el.classList.toggle('nbmode', !!(this.doc && this.isNb));
     this.scroller.style.touchAction = draw ? 'none' : 'pan-x pan-y';
   }
 
@@ -410,9 +571,20 @@ export class Viewer {
     this.app.setActiveViewer(this);
     if (e.pointerType === 'touch' && this.penDown) return;             // palma da mão encostada enquanto a caneta escreve
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now(), type: e.pointerType, x0: e.clientX, y0: e.clientY });
-    if (tool === 'read') return;
     const hit = this.slotAt(e.clientX, e.clientY);
-    if (this.canDraw(e) && hit && tool !== 'read') {
+    // objeto selecionado: arrastar move; a alça do canto redimensiona
+    if (this.sel && hit && (tool === 'read' || tool === 'lasso' || tool === 'text')) {
+      const where = this.inSel(hit);
+      if (where && (this.canDraw(e) || this.pointers.size === 1)) {
+        e.preventDefault();
+        try { this.scroller.setPointerCapture(e.pointerId); } catch (er) {}
+        this.op = { type: where, s: hit.s, cx0: e.clientX, cy0: e.clientY, id: e.pointerId, a: this.sel.single };
+        return;
+      }
+      if (!where && this.pointers.size === 1 && (e.pointerType !== 'touch' || tool !== 'lasso')) { this.clearSelection(); }
+    }
+    if (tool === 'read' && !this.sel) return;
+    if (this.canDraw(e) && hit && tool !== 'read' && tool !== 'text') {
       e.preventDefault();
       try { this.scroller.setPointerCapture(e.pointerId); } catch (er) {}
       this.penDown = e.pointerType !== 'touch';
@@ -428,13 +600,19 @@ export class Viewer {
         this.addPt(e);
         return;
       }
-      if (tool === 'linkrect') {
-        const r = sv('rect', { class: 'ulink live', x: hit.x, y: hit.y, width: 0, height: 0 });
+      if (tool === 'linkrect' || tool === 'crop') {
+        const r = sv('rect', { class: tool === 'crop' ? 'croprect' : 'ulink live', x: hit.x, y: hit.y, width: 0, height: 0 });
         hit.s.live.appendChild(r);
-        this.op = { type: 'rect', s: hit.s, x0: hit.x, y0: hit.y, r, id: e.pointerId };
+        this.op = { type: 'rect', s: hit.s, x0: hit.x, y0: hit.y, r, id: e.pointerId, crop: tool === 'crop' };
         return;
       }
       if (tool === 'note') { this.op = { type: 'note', s: hit.s, x: hit.x, y: hit.y, id: e.pointerId }; return; }
+      if (tool === 'lasso') {
+        const path = sv('path', { class: 'lassop', d: '' });
+        hit.s.live.appendChild(path);
+        this.op = { type: 'lasso', s: hit.s, pts: [[hit.x, hit.y]], path, id: e.pointerId };
+        return;
+      }
     }
     // dedo em modo de escrita: arrasta a página / pinça
     if (e.pointerType === 'touch') {
@@ -483,6 +661,20 @@ export class Viewer {
       e.preventDefault();
       if (op.type === 'ink') this.addPt(e);
       else if (op.type === 'erase') { const hit = this.slotAt(e.clientX, e.clientY); if (hit && hit.s === op.s) this.eraseAt(hit); }
+      else if (op.type === 'lasso') {
+        const r = op.s.slot.getBoundingClientRect();
+        op.pts.push([(e.clientX - r.left) / this.scale, (e.clientY - r.top) / this.scale]);
+        op.path.setAttribute('d', 'M' + op.pts.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') + 'Z');
+      } else if (op.type === 'move') {
+        op.dx = (e.clientX - op.cx0) / this.scale; op.dy = (e.clientY - op.cy0) / this.scale;
+        this.previewMove(op.dx, op.dy);
+      } else if (op.type === 'resize' && op.a) {
+        const dx = (e.clientX - op.cx0) / this.scale;
+        op.nw = Math.max(30, op.a.w + dx);
+        const el = op.a.kind === 'img' ? op.s.svg.querySelector(`g.ann [data-id="${op.a.id}"]`) : this.boxEl(op.s, op.a.id);
+        if (el && op.a.kind === 'img') { el.setAttribute('width', op.nw); el.setAttribute('height', op.a.h * op.nw / op.a.w); }
+        else if (el) el.style.width = `calc(var(--s) * ${op.nw}px)`;
+      }
       else if (op.type === 'rect') {
         const r = op.s.slot.getBoundingClientRect();
         const x = (e.clientX - r.left) / this.scale, y = (e.clientY - r.top) / this.scale;
@@ -530,9 +722,21 @@ export class Viewer {
       } else if (op.type === 'rect') {
         op.r.remove();
         const x = +op.r.getAttribute('x'), y = +op.r.getAttribute('y'), w = +op.r.getAttribute('width'), hh = +op.r.getAttribute('height');
-        if (w > 4 && hh > 4) this.app.linkBuilder(this, { pageKey: op.s.p.key, rects: [[x, y, w, hh]], text: '' });
+        if (w > 4 && hh > 4) {
+          if (op.crop) this.app.cropDone(this, op.s, [x, y, w, hh], e.clientX, e.clientY);
+          else this.app.linkBuilder(this, { pageKey: op.s.p.key, rects: [[x, y, w, hh]], text: '' });
+        }
       } else if (op.type === 'note') {
         this.app.noteAt(this, op.s.p.key, op.x, op.y, e.clientX, e.clientY);
+      } else if (op.type === 'lasso') {
+        op.path.remove();
+        const ids = op.pts.length > 4 ? this.lassoSelect(op.s, op.pts) : new Set();
+        if (ids.size) this.setSelection(op.s, ids); else this.clearSelection();
+      } else if (op.type === 'move') {
+        if (!cancelled && (Math.abs(op.dx || 0) > 0.5 || Math.abs(op.dy || 0) > 0.5)) await this.commitMove(op.dx, op.dy);
+        else if (this.sel) { this.previewMove(0, 0); this.app.onObjectSelection && this.app.onObjectSelection(this, this.sel, e.clientX, e.clientY); }
+      } else if (op.type === 'resize') {
+        if (!cancelled && op.nw && op.a) await this.commitResize(op.a, op.nw);
       }
       return;
     }
@@ -547,10 +751,17 @@ export class Viewer {
       };
       if (performance.now() - p.t < 80) this.momentum = requestAnimationFrame(step);
     }
-    // toque curto no modo leitura: abre a anotação/link tocado
-    if (!cancelled && pp && this.app.tool === 'read' && Date.now() - pp.t < 450 && Math.hypot(e.clientX - pp.x0, e.clientY - pp.y0) < 10) {
+    // toque curto: ferramenta Texto cria/edita caixa; no modo leitura abre a anotação/link tocado
+    const tap = !cancelled && pp && Date.now() - pp.t < 450 && Math.hypot(e.clientX - pp.x0, e.clientY - pp.y0) < 10;
+    if (tap && e.target.closest && e.target.closest('input, a[href], .tbox.editing')) return;
+    if (tap && this.app.tool === 'text') {
+      const hit = this.slotAt(e.clientX, e.clientY);
+      if (hit && this.isNb) this.app.textAt(this, hit);
+      return;
+    }
+    if (tap && this.app.tool === 'read') {
       const sel = window.getSelection();
-      if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+      if (sel && !sel.isCollapsed && sel.toString().trim() && !(e.target.closest && e.target.closest('.tbox'))) return;
       const hit = this.slotAt(e.clientX, e.clientY);
       if (hit && this.app.picking) { this.app.picking(this, hit); return; }
       if (hit) { const target = this.hitTest(hit); if (target) this.app.onTapTarget(this, target, e.clientX, e.clientY); }
@@ -560,6 +771,16 @@ export class Viewer {
   hitTest(hit) {
     const { s, x, y } = hit;
     const list = this.annsOf(s.p.key);
+    if (this.isNb) {
+      for (const a of list.filter(a => a.kind === 'tbox').reverse()) {
+        const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 16;
+        if (x >= a.x - 2 && x <= a.x + a.w + 2 && y >= a.y - 2 && y <= a.y + hh + 2) return { type: 'tbox', a, s };
+      }
+    }
+    for (const a of list.filter(a => a.kind === 'img').reverse()) if (x >= a.x && x <= a.x + a.w && y >= a.y && y <= a.y + a.h) {
+      // traço por cima da imagem tem prioridade
+      if (!list.some(b => b.kind === 'ink' && b.pts.some(p => Math.hypot(p[0] - x, p[1] - y) < 6))) return { type: 'img', a, s };
+    }
     for (const a of list) if (a.kind === 'note' && Math.hypot(a.x - x, a.y - y) < 12) return { type: 'note', a, s };
     const inc = (this.app.incomingLinks && this.app.incomingLinks(this.doc.id, s.p.key)) || [];
     if (inc.length && x > s.p.w - 26 && x < s.p.w) {
@@ -596,6 +817,8 @@ export class Viewer {
     return { text, segs, box: { left: Math.min(...rects.map(r => r.left)), right: Math.max(...rects.map(r => r.right)), top: first.top, bottom: last.bottom } };
   }
 }
+
+function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n : p.kind === 'nb' ? 'Página ' + p.n : 'Página em branco'; }
 
 function inRect(x, y, r, pad = 0) { return x >= r[0] - pad && x <= r[0] + r[2] + pad && y >= r[1] - pad && y <= r[1] + r[3] + pad; }
 

@@ -28,10 +28,10 @@ export async function deleteDoc(id) {
   if (!doc) return;
   const anns = await db.byIndex('annots', 'docId', id);
   const recs = await db.byIndex('recordings', 'docId', id);
-  const audio = anns.filter(a => a.audioId).map(a => a.audioId).concat(recs.map(r => r.fileId));
+  const audio = anns.filter(a => a.audioId).map(a => a.audioId).concat(anns.filter(a => a.fileId).map(a => a.fileId)).concat(recs.map(r => r.fileId));
   await db.delMany('annots', anns.map(a => a.id));
   await db.delMany('recordings', recs.map(r => r.id));
-  await db.delMany('files', [doc.fileId].concat(audio));
+  await db.delMany('files', [doc.fileId].concat(audio).filter(Boolean));
   await db.del('texts', id);
   await db.del('docs', id);
   annCache.delete(id);
@@ -167,3 +167,21 @@ export async function setSettings(patch) {
 export function saveTexts(docId, pages) { return db.put('texts', { docId, pages }); }
 export function getTexts(docId) { return db.get('texts', docId); }
 export function allTexts() { return db.all('texts'); }
+
+// grava várias anotações como uma só ação de desfazer (mover/redimensionar/duplicar)
+export async function putAnnotsGroup(arr) {
+  if (!arr.length) return;
+  const list = await annots(arr[0].docId);
+  const group = [];
+  for (const a of arr) {
+    if (!a.id) a.id = uid('a');
+    if (!a.created) a.created = Date.now();
+    a.updated = Date.now();
+    const before = list.find(x => x.id === a.id) || null;
+    group.push({ before: before && JSON.parse(JSON.stringify(before)), after: JSON.parse(JSON.stringify(a)) });
+    await rawPut(a);
+  }
+  undoStack.push({ docId: arr[0].docId, group });
+  redoStack.length = 0;
+  emit('annots', { docId: arr[0].docId });
+}

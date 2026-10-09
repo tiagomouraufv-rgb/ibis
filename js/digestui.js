@@ -2,6 +2,43 @@
 import * as S from './store.js';
 import { h, clear, btn, icon, toast, modal, confirmBox, fold, fmtDate } from './util.js';
 import { recordVoiceNote, playAudio } from './audio.js';
+import { storeImage, fileUrl, clipboardImage, pickImageFile } from './notebook.js';
+
+export const imgId = name => String(name).split('.')[0];
+export async function imageName(blob) {
+  const im = await storeImage(blob);
+  return im.fileId + (/jpe?g/.test(im.type) ? '.jpg' : '.png');
+}
+
+// imagens do trecho (equação, figura): colar, escolher arquivo, remover
+export function imagesEditor(images, onchange) {
+  const box = h('div.imged');
+  const grid = h('div.imgs');
+  const add = async blob => {
+    if (!blob) return;
+    try { images.push(await imageName(blob)); onchange(images); render(); } catch (e) { toast(e.message); }
+  };
+  const render = () => {
+    clear(grid);
+    images.forEach((n, i) => {
+      const img = h('img', { alt: 'Imagem ' + (i + 1) });
+      fileUrl(imgId(n)).then(u => { img.src = u; });
+      grid.appendChild(h('div.imgth', img, h('button', { type: 'button', 'aria-label': 'Remover imagem', onclick: () => { images.splice(i, 1); onchange(images); render(); } }, '×')));
+    });
+  };
+  box.append(grid, h('div.btnrow',
+    h('button.sbtn.small', { type: 'button', onclick: async () => { const b = await clipboardImage(); if (b) add(b); else toast('Nenhuma imagem na área de transferência (ou sem permissão). No PC, Ctrl+V também cola.', 5000); } }, icon('copy', 16), 'Colar imagem'),
+    h('button.sbtn.small', { type: 'button', onclick: async () => add(await pickImageFile()) }, icon('image', 16), 'Escolher arquivo')));
+  // Ctrl+V / colar enquanto o editor estiver na tela
+  const onPaste = e => {
+    if (!box.isConnected) { document.removeEventListener('paste', onPaste); return; }
+    const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(x => x.type.startsWith('image/'));
+    if (it) { e.preventDefault(); add(it.getAsFile()); }
+  };
+  document.addEventListener('paste', onPaste);
+  render();
+  return box;
+}
 
 // editor de área hierárquica + tags + nota, reaproveitado no painel e no detalhe
 function areaEditor(st, area, onchange) {
@@ -57,7 +94,8 @@ export async function digestPanel(host, d, cb) {
   host.append(
     h('div.rp-head', h('h2', 'Novo trecho no Digest'), btn('close', '', () => cb.onClose(), { iconOnly: true, title: 'Fechar' })),
     h('div.rp-body',
-      h('div.quotebox', h('div.qtext', '“' + d.quote + '”'), h('div.muted', d.name + ' · ' + (dgPages(d) || 'página em branco'))),
+      h('div.quotebox', d.quote ? h('div.qtext', '“' + d.quote + '”') : null, h('div.muted', d.name + ' · ' + (dgPages(d) || 'página em branco'))),
+      h('div.flabel', 'IMAGENS (EQUAÇÃO, FIGURA)'), imagesEditor(d.images = d.images || [], im => { d.images = im; }),
       h('button.dashed', { type: 'button', onclick: () => { d.note = note.value; cb.onContinue(d); } }, icon('plus', 16), 'Continuação (outra página ou coluna)'),
       h('div.flabel', 'ÁREA'), areaEditor(st, d.area, a => { d.area = a; }),
       h('div.flabel', 'TAGS'), tagEditor(st, d.tags, t => { d.tags = t; }),
@@ -65,7 +103,7 @@ export async function digestPanel(host, d, cb) {
     h('div.rp-foot', h('button.sbtn', { type: 'button', onclick: () => cb.onClose() }, 'Cancelar'),
       h('button.pbtn', { type: 'button', onclick: async () => {
         const cur = await S.digest();
-        const r = dgAdd(cur, { doc: d.doc, name: d.name, page: d.page, pageEnd: d.pageEnd, pageKey: d.pageKey, pageKeyEnd: d.pageKeyEnd, quote: d.quote, note: note.value, tags: d.tags, area: d.area, audio: d.audio }, Date.now());
+        const r = dgAdd(cur, { doc: d.doc, name: d.name, page: d.page, pageEnd: d.pageEnd, pageKey: d.pageKey, pageKeyEnd: d.pageKeyEnd, quote: d.quote, note: note.value, tags: d.tags, area: d.area, audio: d.audio, images: d.images || [] }, Date.now());
         if (!r.item) { toast('Trecho vazio.'); return; }
         await S.saveDigest(r.store);
         cb.onSaved(r.item);
@@ -132,7 +170,8 @@ export class DigestScreen {
 
   card(it, big) {
     return h('article.dcard' + (big ? '.big' : ''), { onclick: e => { if (!e.target.closest('button')) this.detail(it); } },
-      h('div.qtext', '“' + it.quote + '”'),
+      it.quote ? h('div.qtext', '“' + it.quote + '”') : null,
+      (it.images && it.images.length) ? h('div.imgs.small', it.images.map(n => { const img = h('img', { alt: '' }); fileUrl(imgId(n)).then(u => { img.src = u; }); return img; })) : null,
       h('div.dmeta', h('span', it.src.name), it.page ? h('span', '· ' + dgPages(it)) : null, it.area.length ? h('span.area', dgAreaText(it.area)) : null, h('div.grow'), it.tags.map(t => h('span.tagchip', '#' + t))),
       it.note ? h('div.dnote', it.note) : null,
       it.audio ? h('button.sbtn.small', { type: 'button', onclick: () => playAudio(it.audio, 0, 'Nota de voz') }, icon('play', 14), 'Nota de voz') : null);
@@ -169,13 +208,14 @@ export class DigestScreen {
     };
     renderAudio();
     modal('Trecho do Digest', h('div',
-      h('blockquote.q', d.quote), h('p.muted', d.src.name + ' · ' + (dgPages(d) || '') + ' · ' + dgDate(d.created)),
+      d.quote ? h('blockquote.q', d.quote) : null, h('p.muted', d.src.name + ' · ' + (dgPages(d) || '') + ' · ' + dgDate(d.created)),
+      h('div.flabel', 'IMAGENS'), imagesEditor(d.images = d.images || [], im => { d.images = im; }),
       h('div.flabel', 'ÁREA'), areaEditor(st, d.area, a => { d.area = a; }),
       h('div.flabel', 'TAGS'), tagEditor(st, d.tags, t => { d.tags = t; }),
       h('div.flabel', 'NOTA'), note, audioRow), [
       { label: 'Apagar', danger: true, onclick: async c => { if (await confirmBox('Apagar trecho', 'Apagar este trecho do Digest?', 'Apagar', true)) { c(); await S.saveDigest(dgDelete(await S.digest(), it.id)); } } },
       { label: 'Abrir no PDF', onclick: c => { c(); this.app.openAt(it.src.doc, it.pageKey || ('p' + it.page)); } },
-      { label: 'Salvar', primary: true, onclick: async c => { c(); const r = dgUpdate(await S.digest(), it.id, { note: note.value, tags: d.tags, area: d.area, audio: d.audio }, Date.now()); await S.saveDigest(r.store); toast('Salvo.'); } },
+      { label: 'Salvar', primary: true, onclick: async c => { c(); const r = dgUpdate(await S.digest(), it.id, { note: note.value, tags: d.tags, area: d.area, audio: d.audio, images: d.images }, Date.now()); await S.saveDigest(r.store); toast('Salvo.'); } },
     ], { wide: true, focus: false });
   }
 }

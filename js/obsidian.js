@@ -112,6 +112,11 @@ export async function vaultZip(docIds) {
   const files = {};
   const docs = (await S.allDocs()).filter(d => !docIds || docIds.includes(d.id));
   for (const d of docs) {
+    if (d.kind === 'notebook') {
+      const NB = await import('./notebook.js');
+      Object.assign(files, await NB.notebookObsidianFiles(d, 'Cadernos'));
+      continue;
+    }
     const anns = await S.annots(d.id);
     if (!anns.length && !d.briefing && !(d.meta && d.meta.title)) continue;
     const { text, audioFiles } = await docMarkdown(d);
@@ -123,6 +128,10 @@ export async function vaultZip(docIds) {
   }
   const dg = await S.digest();
   for (const f of dgObsidianFiles(dg, Date.now())) files['Digest/' + f.path] = strToU8(f.text);
+  for (const it of dg.items) for (const n of (it.images || [])) {
+    const b = await S.audioBlob(String(n).split('.')[0]);
+    if (b) files['Digest/Imagens/' + n] = new Uint8Array(await b.arrayBuffer());
+  }
   for (const it of dg.items) if (it.audio) {
     const b = await S.audioBlob(it.audio);
     if (b) files['Digest/Áudios/' + it.audio + '.' + audioExt(b.type)] = new Uint8Array(await b.arrayBuffer());

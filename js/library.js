@@ -6,6 +6,9 @@ import { openExportDialog, openObsidianDialog, openMetaDialog, openProjectsDialo
 import { playAudio } from './audio.js';
 import { vaultZip } from './obsidian.js';
 import { downloadBlob } from './util.js';
+import * as NB from './notebook.js';
+import { plainText } from './md.js';
+import { openNotebookExport } from './dialogs.js';
 
 export class Library {
   constructor(app) {
@@ -45,6 +48,7 @@ export class Library {
     const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf', multiple: true, style: { display: 'none' } });
     fileIn.addEventListener('change', () => this.app.importFiles([...fileIn.files], this.view.startsWith('projeto:') ? this.view.slice(8) : null));
     m.append(h('header.ltop', h('h1', await this.title()), h('div.grow'), h('div.searchbox', icon('search', 18), search),
+      h('button.sbtn', { type: 'button', onclick: () => this.newNotebook() }, icon('notebook', 18), 'Novo caderno'),
       h('button.pbtn', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), 'Abrir PDF'), fileIn));
     const body = h('div.lbody');
     m.appendChild(body);
@@ -94,7 +98,7 @@ export class Library {
         h('button.cardopen', { type: 'button', onclick: () => this.app.openDoc(d.id), 'aria-label': 'Abrir ' + S.docTitle(d) }, thumb),
         h('div.cardinfo',
           h('div.ctitle', S.docTitle(d)),
-          h('div.cmeta', [d.meta && d.meta.year, d.meta && d.meta.journal].filter(Boolean).join(' · ') || (d.fileName || '')),
+          h('div.cmeta', d.kind === 'notebook' ? 'Caderno · ' + (d.pages || []).length + ' página(s)' : ([d.meta && d.meta.year, d.meta && d.meta.journal].filter(Boolean).join(' · ') || (d.fileName || ''))),
           h('div.cmeta', (d.opened ? 'Aberto em ' + fmtDate(d.opened) : 'Novo') + (n ? ' · ' + n + ' anotações' : ''))),
         h('button.ibtn.cardmenu', { type: 'button', 'aria-label': 'Opções', onclick: e => this.docMenu(d, e.clientX, e.clientY) }, icon('more', 20)));
       grid.appendChild(card);
@@ -102,7 +106,30 @@ export class Library {
     }
   }
 
+  async newNotebook() {
+    const { modal } = await import('./util.js');
+    const name = h('input', { type: 'text', value: 'Caderno ' + new Date().toLocaleDateString('pt-BR') });
+    let tpl = 'lined';
+    const tpls = h('div.chips');
+    const render = () => { clear(tpls); for (const [id, l] of NB.TEMPLATES) tpls.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(tpl === id), onclick: () => { tpl = id; render(); } }, l)); };
+    render();
+    modal('Novo caderno', h('div', h('label.field', h('span', 'Nome'), name), h('div.flabel', 'MODELO DAS PÁGINAS'), tpls), [
+      { label: 'Cancelar' },
+      { label: 'Criar', primary: true, onclick: async c => {
+        c();
+        const doc = await NB.createNotebook(name.value.trim() || 'Caderno', tpl);
+        if (this.view.startsWith('projeto:')) { doc.projects = [this.view.slice(8)]; await S.saveDoc(doc); }
+        this.app.openDoc(doc.id);
+      } },
+    ]);
+  }
+
   async thumb(d, el) {
+    if (d.kind === 'notebook') {
+      try { el.appendChild(h('img', { src: await NB.coverDataUrl(d), alt: '' })); } catch (e) { el.appendChild(icon('notebook', 40)); }
+      el.classList.add('nbcover');
+      return;
+    }
     if (d.thumb) { el.appendChild(h('img', { src: d.thumb, alt: '' })); return; }
     try {
       const hd = await openPdf(d);
@@ -119,10 +146,10 @@ export class Library {
   docMenu(d, x, y) {
     popMenu(x - 220, y, [
       { icon: 'doc', label: 'Abrir', onclick: () => this.app.openDoc(d.id) },
-      { icon: 'tag', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
+      d.kind === 'notebook' ? null : { icon: 'tag', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
       { icon: 'folder', label: 'Projetos…', onclick: () => openProjectsDialog(d) },
-      { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },
-      { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
+      d.kind === 'notebook' ? { icon: 'upload', label: 'Exportar caderno (PDF / Obsidian)', onclick: () => openNotebookExport(d) } : { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },
+      d.kind === 'notebook' ? null : { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
       { icon: 'ai', label: 'Resumo das anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
       { icon: 'note', label: 'Renomear', onclick: async () => { const n = await promptBox('Renomear', 'Nome', d.name, 'Salvar'); if (n && n.trim()) { d.name = n.trim(); await S.saveDoc(d); } } },
       '-',
@@ -192,12 +219,12 @@ export class Library {
     const pending = docs.filter(d => !texts.some(t => t.docId === d.id)).length;
     if (pending) body.appendChild(h('p.muted', pending + ' PDF(s) ainda sendo indexados para a busca.'));
     // anotações
-    const anns = (await S.allAnnots()).filter(a => has((a.text || '') + ' ' + (a.note || '')));
+    const anns = (await S.allAnnots()).filter(a => has((a.text || '') + ' ' + (a.note || '') + ' ' + (a.md ? plainText(a.md) : '')));
     body.appendChild(sec('Destaques e notas', anns.length));
     for (const a of anns.slice(0, 100)) {
       const d = docs.find(x => x.id === a.docId); if (!d) continue;
       body.appendChild(h('button.srow.big', { type: 'button', onclick: () => this.app.openAt(d.id, a.pageKey, a.rects ? a.rects[0][1] : a.y) }, icon('note', 18),
-        h('div.grow', h('div.clamp', a.text || ''), a.note ? h('div.clamp.muted', 'Nota: ' + a.note) : null, h('div.muted', S.docTitle(d) + ' · ' + pageLabel(a.pageKey)))));
+        h('div.grow', h('div.clamp', a.text || (a.md ? plainText(a.md) : '')), a.note ? h('div.clamp.muted', 'Nota: ' + a.note) : null, h('div.muted', S.docTitle(d) + ' · ' + (d.kind === 'notebook' ? 'caderno' : pageLabel(a.pageKey))))));
     }
     // Digest
     const dg = await S.digest();

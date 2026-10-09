@@ -12,7 +12,7 @@ import { vaultZip } from './obsidian.js';
 import { downloadBlob } from './util.js';
 import { isAndroidApp, b64ToBytes } from './platform.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 class App {
   constructor() {
@@ -136,7 +136,7 @@ class App {
 
   // texto de todas as páginas, para a busca geral (roda aos poucos, em segundo plano)
   async indexDoc(doc) {
-    if (await S.getTexts(doc.id)) return;
+    if (!doc || doc.kind === 'notebook' || await S.getTexts(doc.id)) return;
     try {
       const hd = await openPdf(doc);
       const pages = [];

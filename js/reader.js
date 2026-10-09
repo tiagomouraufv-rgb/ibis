@@ -2,7 +2,7 @@
 import { Viewer, darker } from './viewer.js';
 import * as S from './store.js';
 import { openPdf, getPage, pageList, pageText, resolveDest, outline, pageLabel, pageNum } from './pdfdoc.js';
-import { h, clear, icon, btn, toast, modal, popMenu, promptBox, confirmBox, copyText, cleanText, fold, CATS, catInfo, INK_COLORS, uid, fmtTime, debounce } from './util.js';
+import { h, clear, icon, btn, toast, modal, popMenu, promptBox, confirmBox, copyText, cleanText, fold, CATS, catInfo, INK_COLORS, uid, fmtTime, debounce, downloadBlob, safeName } from './util.js';
 import { recordVoiceNote, SessionRecorder, playAudio } from './audio.js';
 import * as AI from './ai.js';
 import { openExportDialog, openObsidianDialog, openMetaDialog, showAiResult, openBriefing } from './dialogs.js';
@@ -10,6 +10,9 @@ import { digestPanel } from './digestui.js';
 import { speak, stopSpeak } from './tts.js';
 import { openExternal, openUri } from './platform.js';
 import { translatePop, wikiPop } from './lookup.js';
+import * as NB from './notebook.js';
+import { headings, plainText } from './md.js';
+import { openNotebookExport } from './dialogs.js';
 
 export class Reader {
   constructor(app) {
@@ -20,6 +23,16 @@ export class Reader {
     this.docHist = [];
     this.picking = null;
     this.recorder = new SessionRecorder(() => this.updateRecBtn());
+    this.textEditor = new NB.TextEditor(this);
+    // colar imagem (Ctrl+V / colar) no caderno
+    document.addEventListener('paste', async e => {
+      if (!this.root.isConnected || !this.doc || !NB.isNotebook(this.doc) || this.textEditor.active) return;
+      if (e.target.closest && e.target.closest('input, textarea')) return;
+      const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(x => x.type.startsWith('image/'));
+      if (!it) return;
+      e.preventDefault();
+      this.placeImage(it.getAsFile());
+    });
     this.root = h('div.reader');
     this.buildChrome();
     S.on('settings', st => { this.settings = st; this.applyPdfMode(); });
@@ -61,7 +74,7 @@ export class Reader {
       this.modeBtn,
       this.recBtn,
       btn('digest', 'Digest', () => this.app.showDigest(), { cls: 'sbtn hide-sm' }),
-      btn('upload', 'Exportar', () => openExportDialog(this.doc), { cls: 'pbtn' }),
+      btn('upload', 'Exportar', () => NB.isNotebook(this.doc) ? openNotebookExport(this.doc) : openExportDialog(this.doc), { cls: 'pbtn' }),
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }),
     );
     // barra de ferramentas (lateral)
@@ -74,12 +87,16 @@ export class Reader {
       tb('pen', 'pen', 'Caneta (só a S Pen escreve)'),
       tb('marker', 'marker', 'Marca-texto livre'),
       tb('eraser', 'eraser', 'Borracha'),
+      tb('lasso', 'lasso', 'Laço: selecionar, mover, apagar, duplicar'),
+      this.textTool = tb('text', 'text', 'Texto (Markdown e equações): toque no lugar'),
       tb('linkrect', 'link', 'Criar link: desenhe um retângulo'),
-      tb('note', 'note', 'Nota: toque no lugar'),
+      this.cropTool = tb('crop', 'crop', 'Recortar imagem da página (equação, figura)'),
+      tb('note', 'note', 'Nota ou nota de voz: toque no lugar'),
+      this.imgBtn = btn('image', '', e => this.imageMenu(e), { title: 'Inserir imagem', iconOnly: true, cls: 'ibtn tool' }),
       h('div.rsep'), this.colorBox, this.widthBox, h('div.rsep'),
       btn('undo', '', () => this.undo(), { title: 'Desfazer', iconOnly: true, cls: 'ibtn tool' }),
       btn('redo', '', () => this.redo(), { title: 'Refazer', iconOnly: true, cls: 'ibtn tool' }),
-      btn('margin', '', () => this.toggleMargin(), { title: 'Margem expandida nesta página', iconOnly: true, cls: 'ibtn tool' }),
+      this.marginBtn = btn('margin', '', () => this.toggleMargin(), { title: 'Margem expandida nesta página', iconOnly: true, cls: 'ibtn tool' }),
       h('div.grow'),
       this.penHint = h('div.penhint'),
     );
@@ -102,11 +119,19 @@ export class Reader {
 
   afterOpen() {
     this.titleEl.textContent = S.docTitle(this.doc);
+    const nb = NB.isNotebook(this.doc);
+    this.root.classList.toggle('isnb', nb);
+    this.textTool.style.display = nb ? '' : 'none';
+    this.imgBtn.style.display = nb ? '' : 'none';
+    this.cropTool.style.display = nb ? 'none' : '';
+    if (nb && this.tool === 'crop') this.tool = 'read';
+    this.marginBtn.style.display = nb ? 'none' : '';
+    if (!nb && this.tool === 'text') this.tool = 'read';
     this.setTool(this.tool);
     this.applyPdfMode();
     this.onNav(this.active);
     if (this.sideOpen) this.renderSide();
-    this.app.indexDoc(this.doc);
+    if (!nb) this.app.indexDoc(this.doc);
   }
 
   addViewer() {
@@ -142,6 +167,11 @@ export class Reader {
     const st = this.settings || {};
     this.penHint.textContent = id === 'read' ? 'Dedo e caneta selecionam texto' : (st.penOnly ? 'Só a S Pen escreve · o dedo arrasta e dá zoom' : 'Dedo e caneta escrevem');
     if (id !== 'read') { window.getSelection().removeAllRanges(); this.hideSel(); }
+    if (id === 'text') this.penHint.textContent = 'Toque na página para escrever com o teclado (Markdown, $equações$)';
+    if (id === 'lasso') this.penHint.textContent = 'Contorne com a S Pen o que quer selecionar';
+    if (id === 'crop') this.penHint.textContent = 'Desenhe um retângulo em volta da equação ou figura';
+    if (id !== 'lasso') this.viewers.forEach(v => v.clearSelection());
+    if (this.textEditor && this.textEditor.active && id !== 'text' && id !== 'read') this.textEditor.close();
   }
 
   renderColors() {
@@ -189,8 +219,8 @@ export class Reader {
     if (v !== this.active || !v.doc) return;
     const k = v.currentKey();
     const p = v.pages.find(x => x.key === k);
-    const N = v.hd ? v.hd.pdf.numPages : 0;
-    this.pageEl.textContent = p ? (p.kind === 'pdf' ? 'p. ' + p.n + ' de ' + N : 'página em branco') : '';
+    const N = v.hd ? v.hd.pdf.numPages : v.pages.length;
+    this.pageEl.textContent = p ? (p.kind === 'pdf' ? 'p. ' + p.n + ' de ' + N : p.kind === 'nb' ? 'Página ' + p.n + ' de ' + N : 'página em branco') : '';
     this.backBtn.style.display = (v.hist.length || this.docHist.length) ? '' : 'none';
     this.toolBtns && this.root.querySelector('[title="Margem expandida nesta página"]').setAttribute('aria-pressed', String(!!(v.doc.margins && v.doc.margins[k])));
   }
@@ -254,12 +284,23 @@ export class Reader {
   }
 
   async sideOutline(body, v) {
+    if (v.isNb) {
+      const anns = NB.readingOrder(v.doc, (await S.annots(v.doc.id)).filter(a => a.kind === 'tbox'));
+      body.appendChild(h('div.shead', h('span', 'Títulos do caderno')));
+      let any = false;
+      for (const a of anns) for (const t of headings(a.md)) {
+        any = true;
+        body.appendChild(h('button.srow' + (t.level === 1 ? '.bold' : ''), { type: 'button', style: { paddingLeft: (10 + (t.level - 1) * 14) + 'px' }, onclick: () => v.goTo(a.pageKey, a.y, { flash: true }) }, h('span.grow', t.text), h('span.muted', 'p. ' + (v.pages.findIndex(p => p.key === a.pageKey) + 1))));
+      }
+      if (!any) body.appendChild(h('p.muted.pad', 'Os títulos (# Título) das caixas de texto aparecem aqui.'));
+    }
     const bms = (v.doc.bookmarks || []);
     body.appendChild(h('div.shead', h('span', 'Marcadores'), btn('bookmark', 'Marcar esta página', () => this.toggleBookmark(v.currentKey()), { cls: 'sbtn small' })));
     if (!bms.length) body.appendChild(h('p.muted.pad', 'Nenhum marcador. Use “Marcar esta página” ou o menu ⋯ de cada página.'));
     for (const b of bms.slice().sort((a, c) => v.pages.findIndex(p => p.key === a.key) - v.pages.findIndex(p => p.key === c.key))) {
       body.appendChild(h('button.srow', { type: 'button', onclick: () => v.goTo(b.key, 0) }, icon('bookmark', 16), h('span.grow', b.label || 'Marcador'), h('span.muted', pageLabel(b.key))));
     }
+    if (v.isNb) return;
     body.appendChild(h('div.shead', h('span', 'Sumário do PDF')));
     const ol = await outline(v.hd);
     if (!ol.length) { body.appendChild(h('p.muted.pad', 'Este PDF não tem sumário interno (índice com links).')); return; }
@@ -284,6 +325,12 @@ export class Reader {
       for (const e of es) if (e.isIntersecting && !e.target.dataset.done) {
         e.target.dataset.done = '1';
         const p = v.pages.find(x => x.key === e.target.dataset.key);
+        if (p.kind === 'nb') {
+          const pageObj = v.doc.pages.find(q => 'n' + q.id === p.key);
+          const c = await NB.rasterPage(v.doc, pageObj, await S.annots(v.doc.id), { scale: 110 / p.w, template: true });
+          if (c) e.target.querySelector('.tpage').appendChild(c);
+          continue;
+        }
         if (p.kind !== 'pdf') continue;
         const pg = await getPage(v.hd, p.n);
         const vp = pg.getViewport({ scale: 110 / p.w });
@@ -296,6 +343,7 @@ export class Reader {
     for (const p of v.pages) {
       const n = anns.filter(a => a.pageKey === p.key).length;
       const bm = (v.doc.bookmarks || []).some(b => b.key === p.key);
+      if (v.isNb && p.index === 0) grid.parentNode.insertBefore(h('div.btnrow.pad', h('button.sbtn.small', { type: 'button', onclick: () => this.nbAddPage(v, v.pages.length - 1) }, icon('plus', 16), 'Nova página no fim')), grid);
       const t = h('div.thumb', { 'data-key': p.key },
         h('button.tpage' + (p.kind === 'blank' ? '.blank' : ''), { type: 'button', 'aria-label': 'Ir para ' + pageLabel(p.key), style: { aspectRatio: p.w + ' / ' + p.h }, onclick: () => v.goTo(p.key, 0) }),
         h('div.tlabel', h('span', (bm ? '🔖 ' : '') + (p.kind === 'pdf' ? p.n : 'branco')), n ? h('span.badge', String(n)) : null,
@@ -353,7 +401,13 @@ export class Reader {
       const fq = fold(q);
       res.appendChild(h('p.muted.pad', 'Buscando…'));
       const out = [];
-      for (let n = 1; n <= v.hd.pdf.numPages; n++) {
+      if (v.isNb) {
+        for (const a of await S.annots(v.doc.id)) {
+          const t = a.kind === 'tbox' ? plainText(a.md) : (a.text || '') + ' ' + (a.note || '');
+          if (fold(t).includes(fq)) out.push({ ann: a, t });
+        }
+      }
+      for (let n = 1; v.hd && n <= v.hd.pdf.numPages; n++) {
         const t = await pageText(v.hd, n);
         const ft = fold(t);
         let i = ft.indexOf(fq), c = 0;
@@ -423,6 +477,7 @@ export class Reader {
 
   // ---------- menu da página ----------
   pageMenu(v, p, x, y) {
+    if (p.kind === 'nb') return this.nbPageMenu(v, p, x, y);
     const bm = (v.doc.bookmarks || []).some(b => b.key === p.key);
     const mg = !!(v.doc.margins && v.doc.margins[p.key]);
     popMenu(x, y, [
@@ -451,6 +506,7 @@ export class Reader {
   }
 
   async insertBlank(v, p, before) {
+    if (v.isNb) return this.nbAddPage(v, p.index);
     let after;
     if (p.kind === 'pdf') after = before ? p.n - 1 : p.n;
     else { const b = v.doc.blanks.find(x => x.id === p.id); after = b.after; }
@@ -728,6 +784,8 @@ export class Reader {
   // ---------- toques em anotações ----------
   async onTapTarget(v, t, x, y) {
     const a = t.a;
+    if (t.type === 'tbox') { const el = v.boxEl(t.s, a.id); if (el) this.textEditor.open(v, a, el); return; }
+    if (t.type === 'img') { v.setSelection(t.s, new Set([a.id])); return; }
     if (t.type === 'note') {
       const items = [];
       if (a.text) items.push({ icon: 'note', label: 'Ver/editar nota', onclick: () => this.editNote(a) });
@@ -904,16 +962,169 @@ export class Reader {
     toast('Link criado → ' + label);
   }
 
+  // ---------- recorte da página (imagem para o Digest/caderno) ----------
+  async cropImage(v, s, [x, y, w, hh]) {
+    const p = s.p;
+    if (p.kind !== 'pdf') throw new Error('O recorte funciona nas páginas do PDF.');
+    const pg = await getPage(v.hd, p.n);
+    const k = Math.min(4, 2400 / Math.max(w, hh));
+    const vp = pg.getViewport({ scale: k });
+    const full = h('canvas'); full.width = Math.ceil(p.w * k); full.height = Math.ceil(p.h * k);
+    // só renderiza a área recortada (transform desloca a página)
+    full.width = Math.ceil(w * k); full.height = Math.ceil(hh * k);
+    const ctx = full.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, full.width, full.height);
+    await pg.render({ canvasContext: ctx, viewport: vp, transform: [1, 0, 0, 1, -x * k, -y * k] }).promise;
+    return new Promise(r => full.toBlob(r, 'image/png'));
+  }
+
+  async cropDone(v, s, rect, cx, cy) {
+    let blob;
+    try { blob = await this.cropImage(v, s, rect); } catch (e) { toast(e.message); return; }
+    const url = URL.createObjectURL(blob);
+    const pm = popMenu(cx, cy, [
+      { icon: 'digest', label: 'Enviar ao Digest', onclick: async () => {
+        const { imageName } = await import('./digestui.js');
+        const name = await imageName(blob);
+        this.openDigestPanel({ doc: v.doc.id, name: v.doc.name, page: pageNum(s.p.key) || 0, pageKey: s.p.key, quote: '', note: '', tags: [], area: [], images: [name] });
+      } },
+      { icon: 'notebook', label: 'Inserir num caderno…', onclick: () => this.cropToNotebook(blob, v, s) },
+      { icon: 'copy', label: 'Copiar imagem', onclick: async () => {
+        try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); toast('Imagem copiada. Cole no caderno ou em outro app.'); }
+        catch (e) { toast('O navegador não deixou copiar imagem. Use “Salvar imagem”.'); }
+      } },
+      { icon: 'download', label: 'Salvar imagem', onclick: () => downloadBlob(blob, safeName(v.doc.name) + '-p' + pageNum(s.p.key) + '.png') },
+    ]);
+    pm.prepend(h('img.croppreview', { src: url, alt: 'Recorte' }));
+  }
+
+  async cropToNotebook(blob, v, s) {
+    const nbs = (await S.allDocs()).filter(d => NB.isNotebook(d));
+    const go = async d => {
+      const last = d.pages[d.pages.length - 1];
+      const a = await NB.insertImage(d, 'n' + last.id, blob, last.w / 2, 140, last.w);
+      // legenda com a fonte, como caixa de texto logo abaixo
+      await S.putAnnot({ kind: 'tbox', docId: d.id, pageKey: 'n' + last.id, x: a.x, y: a.y + a.h + 4, w: Math.max(160, a.w), md: '*' + S.docTitle(v.doc) + ', ' + pageLabel(s.p.key) + '*' });
+      toast('Inserido no fim de “' + d.name + '”.');
+    };
+    const m = modal('Inserir num caderno', h('div.picklist',
+      nbs.map(d => h('button.pickrow', { type: 'button', onclick: async () => { m.close(); await go(d); } }, h('b', d.name), h('span.muted', (d.pages || []).length + ' página(s)'))),
+      h('button.pickrow', { type: 'button', onclick: async () => { m.close(); const d = await NB.createNotebook('Caderno ' + new Date().toLocaleDateString('pt-BR')); await go(d); } }, h('b', '+ Novo caderno'))));
+  }
+
+  // ---------- caderno ----------
+  async textAt(v, hit) {
+    const t = v.hitTest(hit);
+    if (t && t.type === 'tbox') { const el = v.boxEl(t.s, t.a.id); if (el) this.textEditor.open(v, t.a, el); return; }
+    if (this.textEditor.active) { await this.textEditor.close(); return; }
+    const p = hit.s.p;
+    const w = Math.min(p.w - hit.x - 24, p.w * 0.84);
+    const a = { kind: 'tbox', docId: v.doc.id, pageKey: p.key, x: Math.max(12, hit.x), y: Math.max(8, hit.y - 8), w: Math.max(120, w), md: '' };
+    a.id = uid('a');
+    const el = h('div.tbox.md', { 'data-id': a.id });
+    el.style.left = `calc(var(--s) * ${a.x}px)`; el.style.top = `calc(var(--s) * ${a.y}px)`;
+    el.style.width = `calc(var(--s) * ${a.w}px)`; el.style.fontSize = `calc(var(--s) * ${NB.TEXT_SIZE}px)`;
+    hit.s.tbl.appendChild(el);
+    this.textEditor.open(v, a, el);
+  }
+
+  openLink(href) {
+    if (!href) return;
+    if (/^https?:|^mailto:|^obsidian:/i.test(href)) openExternal(href);
+  }
+
+  onObjectSelection(v, sel, x, y) {
+    document.querySelectorAll('.popmenu.objmenu').forEach(e => e.remove());
+    if (!sel) return;
+    const r = sel.s.slot.getBoundingClientRect();
+    const [bx, by, bw, bh] = sel.bbox;
+    const px = x || (r.left + (bx + bw) * v.scale + 8), py = y || (r.top + by * v.scale);
+    const list = () => v.annsOf(sel.s.p.key).filter(a => sel.ids.has(a.id));
+    const hasInk = list().some(a => a.kind === 'ink');
+    const items = [
+      { icon: 'copy', label: 'Duplicar', onclick: async () => {
+        const copies = list().map(a => { const c = JSON.parse(JSON.stringify(a)); c.id = uid('a'); delete c.rec; if (c.kind === 'ink') c.pts = c.pts.map(p => [p[0] + 14, p[1] + 14, p[2], p[3]]); else { c.x += 14; c.y += 14; } return c; });
+        await S.putAnnotsGroup(copies);
+        v.setSelection(sel.s, new Set(copies.map(c => c.id)));
+      } },
+      hasInk ? { icon: 'pen', label: 'Mudar cor do traço', onclick: () => {
+        const m = popMenu(px, py, INK_COLORS.map(c => ({ label: '●', onclick: async () => { const ch = list().filter(a => a.kind === 'ink').map(a => Object.assign(JSON.parse(JSON.stringify(a)), { color: c })); await S.putAnnotsGroup(ch); } })));
+        [...m.querySelectorAll('button')].forEach((b, i) => { b.style.color = INK_COLORS[i]; b.style.fontSize = '22px'; });
+      } } : null,
+      { icon: 'trash', label: 'Apagar', danger: true, onclick: async () => { await S.delAnnots(list()); v.clearSelection(); } },
+    ];
+    const m = popMenu(Math.min(px, innerWidth - 260), Math.max(70, py), items);
+    m.classList.add('objmenu');
+    m.prepend(h('div.popnote', sel.ids.size + ' item(ns) selecionado(s). Arraste para mover' + (sel.single ? '; o quadradinho no canto muda o tamanho' : '') + '.'));
+  }
+
+  imageMenu(e) {
+    const r = e.currentTarget.getBoundingClientRect();
+    popMenu(r.right + 6, r.top, [
+      { icon: 'folder', label: 'Escolher arquivo (ou foto)', onclick: async () => { const f = await NB.pickImageFile(); if (f) this.placeImage(f); } },
+      { icon: 'copy', label: 'Colar da área de transferência', onclick: async () => {
+        const b = await NB.clipboardImage();
+        if (b) this.placeImage(b); else toast('Nenhuma imagem na área de transferência (ou o navegador não deu permissão). Dica: no PC, Ctrl+V cola direto.', 5000);
+      } },
+    ]);
+  }
+
+  async placeImage(blob) {
+    const v = this.active;
+    if (!v || !v.isNb) return;
+    const key = v.currentKey();
+    const s = v.slots.get(key);
+    const p = s.p;
+    const sc = v.scroller;
+    const top = (sc.scrollTop - s.slot.offsetTop) / v.scale;
+    const cy = Math.max(60, Math.min(p.h - 60, top + sc.clientHeight / v.scale / 2));
+    try {
+      const a = await NB.insertImage(v.doc, key, blob, p.w / 2, cy, p.w);
+      setTimeout(() => v.setSelection(s, new Set([a.id])), 200);
+      toast('Imagem inserida. Arraste para posicionar.');
+    } catch (err) { toast(err.message); }
+  }
+
+  async nbAddPage(v, index, tpl) {
+    const p = await NB.addPage(v.doc, index, tpl);
+    for (const x of this.viewers) if (x.doc && x.doc.id === v.doc.id) { x.doc = v.doc; await x.refreshPages(); }
+    v.goTo('n' + p.id, 0, { noHist: true });
+    if (this.sideOpen) this.renderSide();
+  }
+
+  async nbRefresh(v) {
+    for (const x of this.viewers) if (x.doc && x.doc.id === v.doc.id) { x.doc = v.doc; await x.refreshPages(); }
+    if (this.sideOpen) this.renderSide();
+  }
+
+  nbPageMenu(v, p, x, y) {
+    const bm = (v.doc.bookmarks || []).some(b => b.key === p.key);
+    popMenu(x, y, [
+      { icon: 'plus', label: 'Nova página depois desta', onclick: () => this.nbAddPage(v, p.index) },
+      { icon: 'copy', label: 'Duplicar página', onclick: async () => { await NB.duplicatePage(v.doc, p.index); await this.nbRefresh(v); } },
+      { icon: 'pages', label: 'Modelo da página…', onclick: () => popMenu(x, y, NB.TEMPLATES.map(([id, l]) => ({ label: (p.tpl === id ? '✓ ' : '') + l, onclick: async () => { await NB.setTemplate(v.doc, p.index, id); await this.nbRefresh(v); } }))) },
+      p.index > 0 ? { icon: 'back', label: 'Mover para cima', onclick: async () => { await NB.movePage(v.doc, p.index, -1); await this.nbRefresh(v); v.goTo(p.key, 0, { noHist: true }); } } : null,
+      p.index < v.pages.length - 1 ? { icon: 'fwd', label: 'Mover para baixo', onclick: async () => { await NB.movePage(v.doc, p.index, 1); await this.nbRefresh(v); v.goTo(p.key, 0, { noHist: true }); } } : null,
+      { icon: 'bookmark', label: bm ? 'Remover marcador' : 'Marcar esta página', onclick: () => this.toggleBookmark(p.key, v) },
+      '-',
+      { icon: 'trash', label: 'Apagar página', danger: true, onclick: async () => {
+        if (!(await confirmBox('Apagar página', 'Apagar a página ' + p.n + ' e tudo o que há nela?', 'Apagar', true))) return;
+        await NB.deletePage(v.doc, p.index); await this.nbRefresh(v);
+      } },
+    ]);
+  }
+
   // ---------- menu "mais" ----------
   moreMenu(e) {
     const d = this.doc;
+    const nb = NB.isNotebook(d);
     popMenu(e.clientX - 200, e.clientY + 10, [
-      { icon: 'doc', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
+      nb ? { icon: 'plus', label: 'Nova página no fim', onclick: () => this.nbAddPage(this.active, this.active.pages.length - 1) } : { icon: 'doc', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
       { icon: 'ai', label: 'Resumo das minhas anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
-      { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
-      { icon: 'speak', label: 'Ler a página atual em voz alta', onclick: async () => { const k = this.active.currentKey(); if (k[0] === 'p') speak(await pageText(this.active.hd, pageNum(k))); } },
+      { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => nb ? openNotebookExport(d) : openObsidianDialog(d) },
+      nb ? null : { icon: 'speak', label: 'Ler a página atual em voz alta', onclick: async () => { const k = this.active.currentKey(); if (k[0] === 'p') speak(await pageText(this.active.hd, pageNum(k))); } },
       { icon: 'stop', label: 'Parar leitura em voz alta', onclick: () => stopSpeak() },
-      { icon: 'blank', label: 'Inserir página em branco depois desta', onclick: () => { const v = this.active; this.insertBlank(v, v.pages.find(p => p.key === v.currentKey()), false); } },
+      nb ? null : { icon: 'blank', label: 'Inserir página em branco depois desta', onclick: () => { const v = this.active; this.insertBlank(v, v.pages.find(p => p.key === v.currentKey()), false); } },
       { icon: 'bookmark', label: 'Marcar esta página', onclick: () => this.toggleBookmark(this.active.currentKey()) },
       { icon: 'gear', label: 'Configurações', onclick: () => this.app.openSettings() },
     ]);

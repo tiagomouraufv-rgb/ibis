@@ -55,6 +55,29 @@ export async function openExportDialog(doc) {
   ], { wide: true });
 }
 
+// Exportar caderno: PDF (salvar/compartilhar) ou pacote para o Obsidian
+export async function openNotebookExport(doc) {
+  const NB = await import('./notebook.js');
+  const status = h('p.muted');
+  const pdf = async () => { status.textContent = 'Gerando o PDF (as caixas de texto viram imagem nítida)…'; try { const b = await NB.notebookPdf(doc); status.textContent = ''; return new Blob([b], { type: 'application/pdf' }); } catch (e) { console.error(e); status.textContent = 'Erro: ' + e.message; return null; } };
+  const name = safeName(doc.name) + '.pdf';
+  modal('Exportar caderno', h('div',
+    h('p', 'PDF: páginas com modelo, escrita, imagens e o texto formatado com as equações. As notas de voz vão anexadas ao PDF.'),
+    h('p', 'Obsidian: uma nota .md com o texto em Markdown (as equações em LaTeX, com a numeração como \\tag), as imagens e a escrita à mão como imagem. Extraia o .zip dentro do cofre.'),
+    status), [
+    { label: 'Pacote Obsidian (.zip)', onclick: async () => {
+      const { zipSync } = await import('../vendor/fflate.js');
+      const st = await S.settings();
+      status.textContent = 'Gerando…';
+      const files = await NB.notebookObsidianFiles(doc, 'Cadernos');
+      status.textContent = '';
+      await downloadBlob(new Blob([zipSync(files, { level: 6 })], { type: 'application/zip' }), 'Obsidian-' + safeName(doc.name) + '.zip'); void st;
+    } },
+    { label: 'Salvar PDF', onclick: async () => { const b = await pdf(); if (b) await downloadBlob(b, name); } },
+    { label: 'Compartilhar PDF', primary: true, onclick: async () => { const b = await pdf(); if (b && !(await shareFile(b, name, 'application/pdf'))) await downloadBlob(b, name); } },
+  ], { wide: true });
+}
+
 export async function openObsidianDialog(doc) {
   const st = await S.settings();
   const preview = h('pre.mdprev');
@@ -145,11 +168,12 @@ export async function openBriefing(docs, title, opts) {
   const dg = await S.digest();
   let material = '';
   for (const d of docs) {
-    const anns = (await S.annots(d.id)).filter(a => a.kind === 'hl' || a.kind === 'note');
+    const anns = (await S.annots(d.id)).filter(a => a.kind === 'hl' || a.kind === 'note' || a.kind === 'tbox');
     if (docs.length > 1) material += '\n## ' + S.docTitle(d) + '\n';
     for (const a of anns) {
       const lab = pageLabel(a.pageKey);
       if (a.kind === 'hl') material += `- [${catInfo(a.cat).label}] (${lab}) "${a.text || ''}"` + (a.note ? `\n  Nota: ${a.note}` : '') + '\n';
+      else if (a.kind === 'tbox') material += `- Texto do caderno: ${(a.md || '').slice(0, 3000)}\n`;
       else if (a.text) material += `- Nota (${lab}): ${a.text}\n`;
     }
     for (const it of dgFilter(dg, { source: d.id }, 'pagina')) material += `- Digest (${dgPages(it)}): "${it.quote}"` + (it.note ? `\n  Nota: ${it.note}` : '') + '\n';
@@ -261,6 +285,26 @@ function guideNodes() {
         'Ao soltar, aparece o menu: cores de destaque, sublinhar, tachar, Digest, Nota, Voz, Link, Copiar, Ouvir, Traduzir, Wikipédia e IA.',
         'Selecionando de novo um trecho que já tem algo, o menu mostra a opção de desfazer: a cor marcada com ✕, “Tirar nota”, “Tirar link”, “Tirar do Digest” etc.',
         'Escolher outra cor num trecho já destacado só troca o tipo do destaque.')),
+    sec('Cadernos (escrita, texto e equações)',
+      ol('Na Biblioteca, toque em “Novo caderno”, dê um nome e escolha o modelo (em branco, pautado, quadriculado, pontilhado ou Cornell).',
+        'Caneta, marca-texto e borracha funcionam como no PDF (só a S Pen escreve).',
+        'Ferramenta Texto (T): toque na página para abrir uma caixa e digitar com o teclado. Ao terminar, toque em “Concluir” (ou fora da caixa): o texto aparece formatado.',
+        'Para editar de novo, toque na caixa (na ferramenta Ler ou Texto).',
+        'Imagem (ícone de foto): escolha um arquivo/foto ou cole. No PC, Ctrl+V cola direto na página.',
+        'Laço: contorne traços, imagens ou caixas para mover (arrastando), duplicar, mudar a cor ou apagar. Uma imagem tocada também fica selecionada; o quadradinho do canto muda o tamanho.',
+        'Nota (balão): toque no lugar para uma nota escrita ou de voz. O botão ● grava a aula enquanto você escreve.',
+        'Menu ⋯ de cada página: nova página, duplicar, mudar o modelo, mover, marcar e apagar.')),
+    sec('Markdown e equações (como no Obsidian)',
+      ul('# Título, ## Subtítulo, **negrito**, *itálico*, ==realce==, - lista, - [ ] tarefa (toque para marcar), > citação, `código`.',
+        'Equação no texto: $F = -\\kappa x$. Equação destacada: $$ ... $$ (em linhas próprias).',
+        'Numerar: escreva \\eqn dentro da equação destacada (o botão “(n)” já faz isso). A numeração segue a ordem do caderno.',
+        'Dar nome: \\label{rigidez} dentro da equação. Citar no texto: \\eqref{rigidez} vira “(3)”. O botão “ref” lista os nomes.',
+        'Também vale \\begin{equation} ... \\end{equation} (numerada).',
+        '“Prévia” mostra o resultado enquanto você digita. No Obsidian, a numeração vai como \\tag{n}.')),
+    sec('Imagens no Digest e recorte de equações',
+      ul('No painel do Digest há “Colar imagem” e “Escolher arquivo” (no PC, Ctrl+V também cola).',
+        'Ferramenta Recorte (no PDF): desenhe um retângulo em volta da equação ou figura. Depois escolha: enviar ao Digest, inserir num caderno (com a fonte como legenda), copiar ou salvar a imagem.',
+        'Um trecho do Digest pode ter só imagem e nota, sem texto.')),
     sec('Digest',
       ul('Selecione o trecho e toque em Digest. Escolha a área (Física › Óptica…), tags e escreva a nota.',
         'Se o trecho continua em outra página ou coluna, toque em “Continuação”, selecione o resto e toque em “Continuar”.',

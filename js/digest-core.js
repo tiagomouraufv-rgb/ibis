@@ -60,6 +60,7 @@ function dgNormItem(it) {
         note: dgStr(it.note),
         tags: dgParseTags(dgArr(it.tags) || []),
         audio: dgStr(it.audio),
+        images: (dgArr(it.images) || []).map(dgStr).filter(function(x) { return x !== ""; }),
         pageKeyEnd: dgStr(it.pageKeyEnd)
     };
 }
@@ -171,8 +172,8 @@ function dgAdd(st, f, nowMs) {
     var seq = st.seq + 1;
     var now = new Date(nowMs).toISOString();
     var it = dgNormItem({ id: "D" + seq, created: now, updated: now, src: { doc: f.doc, name: f.name }, page: f.page, pageEnd: f.pageEnd,
-                          pageKey: f.pageKey, pageKeyEnd: f.pageKeyEnd, quote: dgCleanQuote(f.quote), note: dgClean(f.note), tags: dgParseTags(f.tags || []), area: f.area || [], audio: f.audio });
-    if (!it || (it.quote === "" && it.note === "")) return { store: st, item: null };
+                          pageKey: f.pageKey, pageKeyEnd: f.pageKeyEnd, quote: dgCleanQuote(f.quote), note: dgClean(f.note), tags: dgParseTags(f.tags || []), area: f.area || [], audio: f.audio, images: f.images || [] });
+    if (!it || (it.quote === "" && it.note === "" && it.images.length === 0)) return { store: st, item: null };
     return { store: dgWith(st, st.items.concat([it]), seq), item: it };
 }
 
@@ -186,6 +187,7 @@ function dgUpdate(st, id, patch, nowMs) {
         if (patch.tags !== undefined) c.tags = dgParseTags(patch.tags);
         if (patch.area !== undefined) c.area = dgNormArea(patch.area);
         if (patch.audio !== undefined) c.audio = dgStr(patch.audio);
+        if (patch.images !== undefined) c.images = (dgArr(patch.images) || []).map(dgStr).filter(function(x) { return x !== ""; });
         if (patch.quote !== undefined) c.quote = dgClean(patch.quote, 12000);
         if (patch.pageEnd !== undefined) c.pageEnd = Number(patch.pageEnd) > c.page ? Math.floor(Number(patch.pageEnd)) : 0;
         c.updated = new Date(nowMs).toISOString();
@@ -314,7 +316,10 @@ function dgItemMd(it, withSource) {
     var out = [];
     out.push("> [!quote]" + (withSource ? (" " + it.src.name.replace(new RegExp("[\\r\\n]+", "g"), " ")) : "") + (it.page > 0 ? (" · " + dgPages(it)) : ""));
     var q = it.quote.split("\n");
-    for (var i = 0; i < q.length; i++) out.push("> " + q[i]);
+    if (it.quote !== "") for (var i = 0; i < q.length; i++) out.push("> " + q[i]);
+    if (it.images && it.images.length) {
+        for (var im = 0; im < it.images.length; im++) out.push("> ![[" + it.images[im] + "]]");
+    }
     if (it.audio && it.audio !== "") {
         out.push(">");
         out.push("> ![[" + it.audio + "]]");

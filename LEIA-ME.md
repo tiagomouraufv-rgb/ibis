@@ -1,4 +1,4 @@
-# Leitor de Pesquisa 0.2.0
+# Leitor de Pesquisa 0.3.0
 
 App de leitura de PDF para o Galaxy Tab S11 (funciona no Chrome e pode ser instalado como app).
 Seus PDFs, anotações, áudios e o Digest ficam guardados **só no tablet** (no armazenamento do Chrome).
@@ -6,6 +6,8 @@ Seus PDFs, anotações, áudios e o Digest ficam guardados **só no tablet** (no
 ## O que tem nesta versão
 
 - Leitor de PDF com zoom por pinça, sumário do PDF, miniaturas, marcadores e busca.
+- Cadernos (estilo GoodNotes): S Pen, caixas de texto em Markdown com equações LaTeX numeradas, imagens, áudio, laço, modelos de página; exporta PDF e Obsidian.
+- Imagens no Digest (colar, arquivo) e recorte de equações/figuras do PDF.
 - **Caneta só com a S Pen**: o dedo arrasta e dá zoom; a palma é ignorada enquanto a caneta escreve.
 - Caneta (5 cores, 3 espessuras), marca-texto livre, borracha, desfazer/refazer.
 - Destaques coloridos por tipo (Geral, Importante, Dúvida, Citar, Parâmetro), sublinhado e tachado.
