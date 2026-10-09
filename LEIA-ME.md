@@ -1,4 +1,4 @@
-# Leitor de Pesquisa 0.1.0
+# Leitor de Pesquisa 0.2.0
 
 App de leitura de PDF para o Galaxy Tab S11 (funciona no Chrome e pode ser instalado como app).
 Seus PDFs, anotações, áudios e o Digest ficam guardados **só no tablet** (no armazenamento do Chrome).

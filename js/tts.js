@@ -1,6 +1,9 @@
 // Leitura em voz alta com as vozes do próprio Android (funciona sem internet se a voz estiver instalada).
 import * as S from './store.js';
 import { h, btn, toast } from './util.js';
+import { nativeTts } from './platform.js';
+
+window.__ttsDone = () => { if (bar) { bar.remove(); bar = null; } };
 
 let bar = null;
 
@@ -21,6 +24,18 @@ function chunks(t) {
 }
 
 export async function speak(text) {
+  if (nativeTts) {
+    text = String(text || '').trim();
+    if (!text) { toast('Nada para ler.'); return; }
+    stopSpeak();
+    const st = await S.settings();
+    const lang = guessLang(text);
+    bar = h('div.ttsbar', h('span', 'Lendo em voz alta (' + (lang === 'en-US' ? 'inglês' : 'português') + ')'),
+      btn('stop', '', () => stopSpeak(), { iconOnly: true, title: 'Parar' }));
+    document.body.appendChild(bar);
+    nativeTts.speak(text.replace(/\s+/g, ' '), lang, st.ttsRate || 1);
+    return;
+  }
   if (!('speechSynthesis' in window)) { toast('Este navegador não tem leitura em voz alta.'); return; }
   text = String(text || '').trim();
   if (!text) { toast('Nada para ler.'); return; }
@@ -43,6 +58,7 @@ export async function speak(text) {
 }
 
 export function stopSpeak() {
-  try { speechSynthesis.cancel(); } catch (e) {}
+  if (nativeTts) nativeTts.stop();
+  else try { speechSynthesis.cancel(); } catch (e) {}
   if (bar) { bar.remove(); bar = null; }
 }

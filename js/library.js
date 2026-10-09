@@ -68,7 +68,8 @@ export class Library {
       const proj = (await S.projects()).find(p => p.id === pid);
       docs = docs.filter(d => (d.projects || []).includes(pid));
       body.appendChild(h('div.btnrow',
-        h('button.sbtn', { type: 'button', onclick: () => openBriefing(docs, 'Projeto ' + (proj ? proj.name : '')) }, icon('ai', 18), 'Resumo do projeto (IA)'),
+        h('button.sbtn', { type: 'button', onclick: () => this.projectContext(proj) }, icon('ai', 18), proj.aiContext ? 'Contexto da IA ✓' : 'Contexto da IA'),
+        h('button.sbtn', { type: 'button', onclick: () => openBriefing(docs, 'Projeto ' + (proj ? proj.name : ''), { ctx: proj.aiContext }) }, icon('ai', 18), 'Resumo do projeto (IA)'),
         h('button.sbtn', { type: 'button', onclick: async () => { toast('Gerando…'); downloadBlob(await vaultZip(docs.map(d => d.id)), 'Obsidian-' + (proj ? proj.name : 'projeto') + '.zip'); } }, icon('share', 18), 'Pacote do projeto para o Obsidian'),
         h('button.sbtn', { type: 'button', onclick: () => this.addToProject(pid) }, icon('plus', 18), 'Adicionar PDFs da biblioteca'),
         h('button.sbtn', { type: 'button', onclick: async () => { const n = await promptBox('Renomear projeto', 'Nome', proj.name, 'Salvar'); if (n && n.trim()) { proj.name = n.trim(); await S.saveProject(proj); } } }, 'Renomear'),
@@ -127,6 +128,16 @@ export class Library {
       '-',
       { icon: 'trash', label: 'Apagar da biblioteca', danger: true, onclick: async () => { if (await confirmBox('Apagar PDF', 'Apagar “' + S.docTitle(d) + '” e todas as anotações dele deste tablet? O arquivo original no Drive/OneDrive não é afetado.', 'Apagar', true)) await S.deleteDoc(d.id); } },
     ]);
+  }
+
+  async projectContext(proj) {
+    const st = await S.settings();
+    const v = await promptBox('Contexto da IA — ' + proj.name, 'Descreva o projeto: tema, materiais, métodos, o que importa para você. As respostas da IA para os PDFs deste projeto usarão este texto. Deixe vazio para usar o contexto geral.', proj.aiContext || '', 'Salvar', true);
+    if (v === null) return;
+    proj.aiContext = v.trim();
+    await S.saveProject(proj);
+    toast(proj.aiContext ? 'Contexto do projeto salvo.' : 'O projeto usará o contexto geral.');
+    void st;
   }
 
   async addToProject(pid) {

@@ -2,6 +2,7 @@
 import { PROMPTS } from './prompts.js';
 import * as S from './store.js';
 import { copyText, toast } from './util.js';
+import { openExternal, shareText, isAndroidApp } from './platform.js';
 
 const FALLBACKS = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
 
@@ -48,18 +49,30 @@ export const AI_ACTIONS = [
   { id: 'ask', label: 'Perguntar…' },
 ];
 
-export async function runAction(action, selection, docInfo, question, signal) {
+// Contexto usado pela IA: o do projeto do documento (se houver) ou o geral das Configurações
+export async function contextFor(doc) {
+  const st = await S.settings();
+  if (doc && doc.projects && doc.projects.length) {
+    const projs = await S.projects();
+    const ctx = doc.projects.map(id => projs.find(p => p.id === id)).filter(p => p && p.aiContext && p.aiContext.trim()).map(p => p.aiContext.trim());
+    if (ctx.length) return ctx.join('\n');
+  }
+  return st.researchContext || '';
+}
+
+export async function runAction(action, selection, docInfo, question, signal, ctx, language) {
   const st = await S.settings();
   const a = PROMPTS.actions[action];
-  const vars = { language: st.language, document_info: docInfo ? 'Documento: ' + docInfo : '', selection: selection.slice(0, 8000), question: question || '' };
-  const system = fill(PROMPTS.system_common, vars) + '\n\n' + fill(a.system_extra, vars);
+  const vars = { language: language || st.language, document_info: docInfo ? 'Documento: ' + docInfo : '', selection: selection.slice(0, 8000), question: question || '' };
+  let system = fill(PROMPTS.system_common, vars) + '\n\n' + fill(a.system_extra, vars);
+  if (ctx && action !== 'translate') system += '\n\nContexto do leitor (use para escolher exemplos e o que destacar, sem inventar nada): ' + ctx;
   return callGemini(system, fill(a.user_template, vars), 2500, signal);
 }
 
 // Resumo das anotações de um documento ou projeto (não envia o PDF inteiro, só o que você marcou)
-export async function briefing(title, material, signal) {
+export async function briefing(title, material, signal, ctx) {
   const st = await S.settings();
-  const vars = { language: st.language, research_context: st.researchContext, title, material: material.slice(0, 60000) };
+  const vars = { language: st.language, research_context: ctx || st.researchContext, title, material: material.slice(0, 60000) };
   return callGemini(fill(PROMPTS.briefing.system, vars), fill(PROMPTS.briefing.user_template, vars), 6000, signal);
 }
 
@@ -67,17 +80,18 @@ export async function briefing(title, material, signal) {
 export async function googleTranslate(text) {
   const st = await S.settings();
   const t = text.slice(0, 4900);
-  window.open('https://translate.google.com/?sl=auto&tl=' + encodeURIComponent(st.translateTo || 'pt') + '&text=' + encodeURIComponent(t) + '&op=translate', '_blank', 'noopener');
+  openExternal('https://translate.google.com/?sl=auto&tl=' + encodeURIComponent(st.translateTo || 'pt') + '&text=' + encodeURIComponent(t) + '&op=translate');
 }
 
 // Levar ao Claude: usa o menu Compartilhar do Android; se não houver, copia e abre o claude.ai
 export async function sendToClaude(prompt) {
+  if (isAndroidApp) { shareText(prompt); return 'share'; }
   try {
     if (navigator.share) { await navigator.share({ text: prompt }); return 'share'; }
   } catch (e) { if (e && e.name === 'AbortError') return 'cancel'; }
   await copyText(prompt);
   toast('Pergunta copiada. Cole no Claude.');
-  window.open('https://claude.ai/new', '_blank', 'noopener');
+  openExternal('https://claude.ai/new');
   return 'copy';
 }
 

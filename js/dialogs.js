@@ -50,8 +50,8 @@ export async function openExportDialog(doc) {
     h('label.field', h('span', 'Nome do arquivo'), nameIn),
     h('p.muted', 'O original fica intacto. Para salvar no Google Drive ou no OneDrive, use “Compartilhar” e escolha o app.'),
     status), [
-    { label: 'Baixar no tablet', onclick: async () => { const r = await build(); if (r) { downloadBlob(r.blob, r.name); toast('PDF salvo em Downloads.'); } } },
-    { label: 'Compartilhar (Drive, OneDrive…)', primary: true, onclick: async () => { const r = await build(); if (r) { const ok = await shareFile(r.blob, r.name, 'application/pdf'); if (!ok) { downloadBlob(r.blob, r.name); toast('Compartilhar não está disponível aqui; o PDF foi baixado.'); } } } },
+    { label: 'Salvar no tablet', onclick: async () => { const r = await build(); if (r) await downloadBlob(r.blob, r.name); } },
+    { label: 'Compartilhar (Drive, OneDrive…)', primary: true, onclick: async () => { const r = await build(); if (r) { const ok = await shareFile(r.blob, r.name, 'application/pdf'); if (!ok) { await downloadBlob(r.blob, r.name); } } } },
   ], { wide: true });
 }
 
@@ -141,7 +141,7 @@ export function mdToNodes(md) {
 }
 
 // Resumo (IA) a partir das anotações de um ou mais documentos
-export async function openBriefing(docs, title) {
+export async function openBriefing(docs, title, opts) {
   const dg = await S.digest();
   let material = '';
   for (const d of docs) {
@@ -155,7 +155,8 @@ export async function openBriefing(docs, title) {
     for (const it of dgFilter(dg, { source: d.id }, 'pagina')) material += `- Digest (${dgPages(it)}): "${it.quote}"` + (it.note ? `\n  Nota: ${it.note}` : '') + '\n';
   }
   if (!material.trim()) { toast('Não há destaques ou notas para resumir ainda.'); return; }
-  showAiResult('Resumo das anotações', signal => AI.briefing(title, material, signal), {
+  const ctx = docs.length === 1 ? await AI.contextFor(docs[0]) : (opts && opts.ctx) || await AI.contextFor({ projects: [...new Set(docs.flatMap(d => d.projects || []))] });
+  showAiResult('Resumo das anotações', signal => AI.briefing(title, material, signal, ctx), {
     onSaveNote: docs.length === 1 ? async text => { docs[0].briefing = text; await S.saveDoc(docs[0]); toast('Resumo salvo: vai junto na nota do Obsidian.'); } : async text => { await copyText(text); toast('Resumo copiado.'); },
   });
 }
@@ -183,39 +184,52 @@ export async function openProjectsDialog(doc) {
   ]);
 }
 
-export async function openSettings() {
+export async function openSettings(tab) {
   const st = await S.settings();
   const f = {};
   const inp = (k, label, type = 'text', ph = '') => { f[k] = h('input', { type, placeholder: ph }); f[k].value = st[k] || ''; return h('label.field', h('span', label), f[k]); };
-  const ctx = h('textarea', { rows: 3 }); ctx.value = st.researchContext;
+  const ctx = h('textarea', { rows: 4 }); ctx.value = st.researchContext;
   const pen = h('input', { type: 'checkbox' }); pen.checked = st.penOnly;
-  const theme = h('select', ['auto', 'claro', 'escuro'].map(t => h('option', { value: t }, { auto: 'Automático (igual ao Android)', claro: 'Claro', escuro: 'Escuro' }[t]))); theme.value = st.theme;
+  const theme = h('select', ['auto', 'claro', 'escuro'].map(t => h('option', { value: t }, { auto: 'Automático (igual ao sistema)', claro: 'Claro', escuro: 'Escuro' }[t]))); theme.value = st.theme;
   const rate = h('input', { type: 'range', min: 0.6, max: 1.6, step: 0.1 }); rate.value = st.ttsRate || 1;
   const testOut = h('span.muted');
-  modal('Configurações', h('div.settings',
-    h('h3', 'Caneta'),
-    h('label.check', pen, h('span', 'Só a S Pen escreve (o dedo arrasta e dá zoom)')),
-    h('h3', 'Aparência'),
-    h('label.field', h('span', 'Tema do app'), theme),
-    h('label.field', h('span', 'Velocidade da leitura em voz alta'), rate),
-    h('h3', 'IA (Gemini)'),
-    inp('geminiKey', 'Chave da API do Gemini (fica guardada só neste tablet)', 'password', 'AIza…'),
-    h('div.inrow', inp('geminiModel', 'Modelo'), h('button.sbtn', { type: 'button', onclick: async () => {
-      await S.setSettings({ geminiKey: f.geminiKey.value.trim(), geminiModel: f.geminiModel.value.trim() });
-      testOut.textContent = 'Testando…';
-      try { const r = await AI.runAction('translate', 'Optical tweezers.', '', ''); testOut.textContent = 'OK (' + r.model + '): ' + r.text.slice(0, 60); } catch (e) { testOut.textContent = e.message; }
-    } }, 'Testar')), testOut,
-    inp('language', 'Idioma das respostas'),
-    h('label.field', h('span', 'Contexto da sua pesquisa (usado no resumo)'), ctx),
-    h('h3', 'Tradução'),
-    inp('translateTo', 'Idioma de destino no Google Tradutor (código: pt, en, es…)'),
-    h('h3', 'Obsidian'),
-    inp('obsidianVault', 'Nome do cofre (exatamente como aparece no Obsidian)'),
-    inp('obsidianFolder', 'Pasta das notas de leitura'),
-    h('h3', 'Cópia de segurança'),
-    h('p.muted', 'Seus PDFs, anotações, áudios e o Digest ficam guardados no navegador deste tablet. Faça cópias de segurança de vez em quando: se os dados do Chrome forem apagados, eles se perdem.'),
-    h('div.btnrow', h('button.sbtn', { type: 'button', onclick: () => backup() }, 'Fazer cópia de segurança (.zip)'), h('button.sbtn', { type: 'button', onclick: () => restore() }, 'Restaurar cópia…')),
-  ), [
+  const panes = {
+    geral: h('div',
+      h('h3', 'Caneta'),
+      h('label.check', pen, h('span', 'Só a S Pen escreve (o dedo arrasta e dá zoom)')),
+      h('h3', 'Aparência'),
+      h('label.field', h('span', 'Tema do app'), theme),
+      h('label.field', h('span', 'Velocidade da leitura em voz alta'), rate),
+      h('h3', 'Tradução'),
+      inp('translateTo', 'Idioma de destino (código: pt, en, es, fr, de, it)')),
+    ia: h('div',
+      h('p.muted', 'Como conseguir a chave: veja a aba Guia.'),
+      inp('geminiKey', 'Chave da API do Gemini (fica guardada só neste aparelho)', 'password', 'AIza…'),
+      h('div.inrow', inp('geminiModel', 'Modelo'), h('button.sbtn', { type: 'button', onclick: async () => {
+        await S.setSettings({ geminiKey: f.geminiKey.value.trim(), geminiModel: f.geminiModel.value.trim() });
+        testOut.textContent = 'Testando…';
+        try { const r = await AI.runAction('translate', 'Optical tweezers.', '', ''); testOut.textContent = 'Funcionou (' + r.model + '): ' + r.text.slice(0, 60); } catch (e) { testOut.textContent = e.message; }
+      } }, 'Testar')), testOut,
+      inp('language', 'Idioma das respostas'),
+      h('label.field', h('span', 'Contexto geral da sua pesquisa (usado quando o PDF não está num projeto com contexto próprio)'), ctx)),
+    obsidian: h('div',
+      inp('obsidianVault', 'Nome do cofre (exatamente como aparece no Obsidian)'),
+      inp('obsidianFolder', 'Pasta das notas de leitura')),
+    backup: h('div',
+      h('p.muted', 'Seus PDFs, anotações, áudios e o Digest ficam guardados neste aparelho. Faça cópias de segurança de vez em quando: se os dados do navegador/app forem apagados, eles se perdem.'),
+      h('div.btnrow', h('button.sbtn', { type: 'button', onclick: () => backup() }, 'Fazer cópia de segurança (.zip)'), h('button.sbtn', { type: 'button', onclick: () => restore() }, 'Restaurar cópia…'))),
+    guia: guideNodes(),
+  };
+  const tabs = [['geral', 'Geral'], ['ia', 'IA'], ['obsidian', 'Obsidian'], ['backup', 'Cópia'], ['guia', 'Guia']];
+  const tabRow = h('div.tabsrow.inmodal', { role: 'tablist' });
+  const holder = h('div.setpane');
+  const show = id => {
+    clear(tabRow);
+    for (const [k, l] of tabs) tabRow.appendChild(h('button.tab', { type: 'button', role: 'tab', 'aria-selected': String(k === id), onclick: () => show(k) }, l));
+    clear(holder); holder.appendChild(panes[id]);
+  };
+  show(tab || 'geral');
+  modal('Configurações', h('div.settings', tabRow, holder), [
     { label: 'Cancelar' },
     { label: 'Salvar', primary: true, onclick: async c => {
       const p = { researchContext: ctx.value, penOnly: pen.checked, theme: theme.value, ttsRate: +rate.value };
@@ -223,6 +237,60 @@ export async function openSettings() {
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
   ], { wide: true, focus: false });
+}
+
+// Manual curto do app
+function guideNodes() {
+  const sec = (title, ...items) => h('details.guide', h('summary', title), h('div.gbody', items));
+  const ol = (...li) => h('ol', li.map(x => h('li', x)));
+  const ul = (...li) => h('ul', li.map(x => h('li', x)));
+  return h('div.guidewrap',
+    h('p.muted', 'Toque num tópico para abrir.'),
+    sec('Primeiros passos',
+      ol('Na Biblioteca, toque em “Abrir PDF”. O seletor mostra o aparelho, o Google Drive e o OneDrive.',
+        'O PDF abre no leitor. Ele lembra onde você parou.',
+        'Use a barra da esquerda para escolher a ferramenta: Ler/selecionar, Caneta, Marca-texto, Borracha, Link e Nota.',
+        'O botão ☰ no topo abre o painel lateral: Sumário, Páginas, Anotações, Busca e Ligações.')),
+    sec('Caneta (S Pen) e dedo',
+      ul('Com Caneta, Marca-texto ou Borracha, só a S Pen escreve. O dedo arrasta e dois dedos dão zoom.',
+        'Se quiser escrever com o dedo, desligue “Só a S Pen escreve” na aba Geral.',
+        'Desfazer e refazer ficam na barra da esquerda.',
+        'Margem expandida (ícone de página com margem) abre espaço ao lado da página para escrever.')),
+    sec('Selecionar texto',
+      ul('Na ferramenta Ler, arraste sobre o texto (no tablet: toque e segure, depois ajuste as alças).',
+        'Ao soltar, aparece o menu: cores de destaque, sublinhar, tachar, Digest, Nota, Voz, Link, Copiar, Ouvir, Traduzir, Wikipédia e IA.',
+        'Selecionando de novo um trecho que já tem algo, o menu mostra a opção de desfazer: a cor marcada com ✕, “Tirar nota”, “Tirar link”, “Tirar do Digest” etc.',
+        'Escolher outra cor num trecho já destacado só troca o tipo do destaque.')),
+    sec('Digest',
+      ul('Selecione o trecho e toque em Digest. Escolha a área (Física › Óptica…), tags e escreva a nota.',
+        'Se o trecho continua em outra página ou coluna, toque em “Continuação”, selecione o resto e toque em “Continuar”.',
+        'Na tela do Digest há as abas Recentes, Fontes, Áreas, Tags e Revisar.')),
+    sec('Links entre PDFs',
+      ul('Selecione um trecho e toque em Link (ou use a ferramenta Link e desenhe um retângulo).',
+        'Escolha o destino: página deste PDF, outro PDF, Digest, nota do Obsidian ou site. “Escolher o destino tocando na página” marca o ponto exato.',
+        'Na página de destino aparece um ← que mostra de onde vêm os links.')),
+    sec('Chave do Gemini (IA)',
+      ol('No computador ou no tablet, entre em aistudio.google.com com sua conta Google.',
+        'Na primeira vez, aceite os termos e toque em Continue.',
+        'Clique em “Get API key” (menu da esquerda) e depois em “Create API key”. Dê um nome (ex.: Leitor) e confirme.',
+        'Copie a chave (começa com “AIza”).',
+        'Aqui no app: Configurações → aba IA → cole no campo da chave → Testar → Salvar.'),
+      h('p.muted', 'A chave fica guardada só neste aparelho; não a compartilhe. O Google AI Studio tem um plano gratuito com limites de uso; confira os limites atuais na página de preços do Google.')),
+    sec('Contexto da IA por projeto',
+      ol('Na Biblioteca, abra um projeto (lista PROJETOS à esquerda).',
+        'Toque em “Contexto da IA” e descreva o projeto (tema, materiais, o que importa para você).',
+        'As respostas da IA (explicar, perguntar, resumo) para PDFs desse projeto passam a usar esse contexto.',
+        'PDFs fora de projetos usam o “Contexto geral” da aba IA.')),
+    sec('Tradução e Wikipédia',
+      ul('Traduzir abre uma janela aqui mesmo. No Chrome do computador usa o tradutor do próprio Chrome (sem internet); se não houver, usa o Gemini (com a chave configurada). O botão “Google Tradutor ↗” abre o site.',
+        'Wikipédia mostra o resumo do termo selecionado, em português ou inglês, com outros resultados e o link para o artigo completo.',
+        'As duas janelas podem ser arrastadas pelo topo.')),
+    sec('Exportar e Obsidian',
+      ul('Exportar gera o PDF com as marcações: “Editável” (outras pessoas podem ver e mexer; ao reabrir no app, tudo volta editável) ou “Achatado” (aparece igual em qualquer leitor).',
+        'Enviar ao Obsidian: “Enviar esta nota” abre o app do Obsidian (informe o nome do cofre na aba Obsidian); “Pacote .zip” traz todas as notas, o Digest e os áudios para extrair no cofre.')),
+    sec('Cópia de segurança',
+      ul('Tudo fica guardado neste aparelho. Use a aba Cópia de vez em quando para gerar um .zip e guarde-o no Drive.',
+        'Para passar seus dados para outro aparelho (ou do navegador para o app Android), faça a cópia num e restaure no outro.')));
 }
 
 async function backup() {

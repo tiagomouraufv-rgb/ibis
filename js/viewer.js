@@ -2,6 +2,7 @@
 import { pdfjs, openPdf, getPage, pageList, pageLinks } from './pdfdoc.js';
 import * as S from './store.js';
 import { h, clear, icon, catInfo, uid } from './util.js';
+import { registerTextLayer, unregisterTextLayer } from './textsel.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -214,9 +215,11 @@ export class Viewer {
       const layer = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: tvp });
       await layer.render();
       if (s.rendered !== scale) return;
-      if (s.text) s.text.replaceWith(tl); else s.pg.appendChild(tl);
+      if (s.text) { unregisterTextLayer(s.text); s.text.replaceWith(tl); } else s.pg.appendChild(tl);
       s.text = tl;
-      tl.appendChild(h('div.endOfContent'));
+      const end = h('div.endOfContent');
+      tl.appendChild(end);
+      registerTextLayer(tl, end);
     } catch (e) { console.warn('texto', e); }
     if (!s.links) s.links = await pageLinks(this.hd, s.p.n);
     this.drawOverlay(s);

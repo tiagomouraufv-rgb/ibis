@@ -260,3 +260,28 @@ svg.ov { position: absolute; left: 0; top: 0; pointer-events: none; overflow: vi
   .side.open { position: absolute; left: 56px; top: 0; bottom: 0; z-index: 30; }
   .dside { display: none; }
 }
+
+/* 0.2: desfazer no menu de seleção, janelas de tradução/Wikipédia, guia */
+.catbtn.on { box-shadow: 0 0 0 3px #fff, 0 0 0 5px #B4232C; font-size: 16px; color: #B4232C; }
+.mbtn.on { background: #3a2124; color: #ffb4b8; }
+.mbtn.undo { color: #ffb4b8; }
+.lookpop { position: fixed; z-index: 58; width: min(460px, calc(100vw - 16px)); max-height: min(70vh, 560px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 36px rgba(0,0,0,.28); }
+.lookhead { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 14px; border-bottom: 1px solid var(--line); cursor: move; touch-action: none; }
+.lookbody { padding: 10px 14px; overflow-y: auto; flex: 1; }
+.lookfoot { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px 12px 12px; }
+.lookfoot:empty { display: none; }
+select.mini { width: auto; padding: 6px 8px; font-size: 13px; }
+.segbtns { display: flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; }
+.segbtns button { border: none; background: var(--panel); padding: 6px 10px; font-size: 13px; min-height: 34px; }
+.segbtns button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.wkhead { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 8px; }
+.wkhead img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; flex: none; }
+.wktitle { margin: 0 0 2px; font-size: 18px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.wkext { font-family: var(--serif); line-height: 1.55; margin: 6px 0; }
+.trtext { font-family: var(--serif); line-height: 1.55; }
+p.small, .muted.small { font-size: 12px; }
+.tabsrow.inmodal { padding: 0 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; background: transparent; }
+details.guide { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; }
+details.guide summary { padding: 12px 14px; font-weight: 600; cursor: pointer; min-height: 44px; }
+details.guide .gbody { padding: 0 16px 12px; line-height: 1.5; }
+details.guide li { margin: 4px 0; }

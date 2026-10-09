@@ -10,8 +10,9 @@ import { openPdf, pageText } from './pdfdoc.js';
 import { openSettings } from './dialogs.js';
 import { vaultZip } from './obsidian.js';
 import { downloadBlob } from './util.js';
+import { isAndroidApp, b64ToBytes } from './platform.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 class App {
   constructor() {
@@ -41,7 +42,36 @@ class App {
     history.replaceState({ screen: 'library' }, '');
     await this.showLibrary(true);
     this.indexAll();
-    document.getElementById('ver').textContent = 'v' + VERSION;
+    document.getElementById('ver').textContent = 'v' + VERSION + (isAndroidApp ? ' · Android' : '');
+    if (isAndroidApp) {
+      window.__nativePending = () => this.takeNativeFile();
+      this.takeNativeFile();
+    }
+  }
+
+  // PDF aberto com o app a partir do gerenciador de arquivos / compartilhado de outro app
+  async takeNativeFile() {
+    const s = window.AndroidBridge.takePendingFile();
+    if (!s) return;
+    try {
+      const o = JSON.parse(s);
+      await this.importFiles([new File([b64ToBytes(o.b64)], o.name || 'documento.pdf', { type: 'application/pdf' })]);
+    } catch (e) { toast('Não foi possível abrir o arquivo recebido: ' + e.message, 5000); }
+  }
+
+  // botão voltar do Android: fecha janelas, painéis e volta para a biblioteca. Retorna true se tratou.
+  androidBack() {
+    const pop = document.querySelector('.popmenu, .refpop, .lookpop');
+    if (pop) { pop.remove(); return true; }
+    const mb = [...document.querySelectorAll('.modal-back')].pop();
+    if (mb) { const c = mb.querySelector('.modal-head .ibtn'); if (c) c.click(); else mb.remove(); return true; }
+    if (this.reader.root.isConnected) {
+      if (this.reader.right.classList.contains('open')) { this.reader.right.classList.remove('open'); return true; }
+      if (this.reader.sideOpen) { this.reader.toggleSide(); return true; }
+      this.showLibrary(); return true;
+    }
+    if (this.digestScreen.root.isConnected) { this.showLibrary(); return true; }
+    return false;
   }
 
   applyTheme(st) {
@@ -50,6 +80,7 @@ class App {
   }
 
   mount(el) {
+    document.querySelectorAll('.lookpop, .refpop, .popmenu').forEach(e => e.remove());
     [...this.root.children].forEach(c => { if (c !== el) c.remove(); });
     if (!el.isConnected) this.root.appendChild(el);
   }
@@ -82,7 +113,7 @@ class App {
     if (this.reader.root.isConnected || this.digestScreen.root.isConnected) { this.mount(this.library.root); this.library.render(); }
   }
 
-  openSettings() { return openSettings(); }
+  openSettings(tab) { return openSettings(tab); }
 
   async importFiles(files, projectId) {
     let n = 0, restored = 0, last = null;
@@ -135,6 +166,6 @@ const app = new App();
 window.leitorApp = app;
 app.start().catch(e => { console.error(e); document.getElementById('app').append(h('p.err', 'Erro ao iniciar: ' + e.message)); });
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if (!isAndroidApp && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }

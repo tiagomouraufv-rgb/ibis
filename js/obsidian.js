@@ -5,6 +5,7 @@ import { catInfo, CATS } from './util.js';
 import { pageLabel, pageNum } from './pdfdoc.js';
 import { abnt } from './ai.js';
 import { audioExt } from './audio.js';
+import { openUri } from './platform.js';
 
 export function noteFileName(doc) { return dgSafeFileName(doc.name); }
 
@@ -135,7 +136,7 @@ export async function sendNoteToObsidian(doc) {
   const { text } = await docMarkdown(doc);
   const folder = (st.obsidianFolder || 'Leituras').replace(/^\/+|\/+$/g, '');
   const uri = 'obsidian://new?' + (st.obsidianVault ? 'vault=' + encodeURIComponent(st.obsidianVault) + '&' : '') + 'file=' + encodeURIComponent(folder + '/' + noteFileName(doc)) + '&content=' + encodeURIComponent(text) + '&overwrite=true';
-  window.location.href = uri;
+  openUri(uri);
 }
 
 export function obsidianOpenUri(vault, file) {

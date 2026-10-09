@@ -1,4 +1,5 @@
 // Utilitários de interface e texto.
+import { isAndroidApp, nativeSave, nativeShareFile, nativeCopy } from './platform.js';
 
 export function uid(prefix = '') {
   return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -85,6 +86,7 @@ const P = {
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
   redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
   rect: '<rect x="4" y="6" width="16" height="12" rx="1" stroke-dasharray="3 2"/>',
+  wiki: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
   palm: '<path d="M7 11V5a1.5 1.5 0 0 1 3 0v5M10 10V3.5a1.5 1.5 0 0 1 3 0V10M13 10V4.5a1.5 1.5 0 0 1 3 0V12M16 11V8a1.5 1.5 0 0 1 3 0v6a7 7 0 0 1-7 7h-1a6 6 0 0 1-5-3l-3-5a1.5 1.5 0 0 1 2.5-1.6L7 14"/>',
 };
 
@@ -143,10 +145,12 @@ export function modal(title, content, actions = [], opts = {}) {
 
 export function confirmBox(title, text, okLabel = 'Confirmar', danger = false) {
   return new Promise(res => {
-    modal(title, h('p', text), [
-      { label: 'Cancelar', onclick: c => { c(); res(false); } },
-      { label: okLabel, primary: !danger, danger, onclick: c => { c(); res(true); } },
-    ], { onclose: () => res(false) });
+    let done = false;
+    const fin = v => { if (!done) { done = true; res(v); } };
+    modal(title, h('p', { style: { whiteSpace: 'pre-wrap' } }, text), [
+      { label: 'Cancelar', onclick: c => { fin(false); c(); } },
+      { label: okLabel, primary: !danger, danger, onclick: c => { fin(true); c(); } },
+    ], { onclose: () => fin(false) });
   });
 }
 
@@ -204,21 +208,31 @@ export function debounce(fn, ms) {
 }
 
 export async function copyText(t) {
+  if (nativeCopy(t)) return true;
   try { await navigator.clipboard.writeText(t); return true; } catch (e) {
     const ta = h('textarea', { style: { position: 'fixed', opacity: 0 } }); ta.value = t; document.body.appendChild(ta); ta.select();
     let ok = false; try { ok = document.execCommand('copy'); } catch (e2) {} ta.remove(); return ok;
   }
 }
 
-export function downloadBlob(blob, name) {
+// No navegador baixa para Downloads; no app Android abre o "Salvar como".
+export async function downloadBlob(blob, name) {
+  if (isAndroidApp) {
+    const r = await nativeSave(blob, name, blob.type);
+    if (r.ok) toast('Salvo: ' + name); else if (r.msg) toast(r.msg);
+    return r;
+  }
   const url = URL.createObjectURL(blob);
   const a = h('a', { href: url, download: name });
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
+  toast('Salvo em Downloads: ' + name);
+  return { ok: true };
 }
 
 // Compartilhar arquivo pelo menu do Android (Drive, OneDrive, e-mail...). Retorna false se não suportado.
 export async function shareFile(blob, name, type) {
+  if (isAndroidApp) return nativeShareFile(blob, name, type);
   try {
     const f = new File([blob], name, { type: type || blob.type });
     if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f], title: name }); return true; }

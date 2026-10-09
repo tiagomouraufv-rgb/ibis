@@ -1,9 +1,9 @@
 // Guarda os arquivos do app para funcionar sem internet. Seus dados ficam no IndexedDB, não aqui.
-const CACHE = 'leitor-v0.1.0';
+const CACHE = 'leitor-v0.2.0';
 const FILES = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
   'js/app.js', 'js/db.js', 'js/util.js', 'js/store.js', 'js/pdfdoc.js', 'js/viewer.js', 'js/reader.js', 'js/library.js',
-  'js/digestui.js', 'js/dialogs.js', 'js/export.js', 'js/obsidian.js', 'js/ai.js', 'js/prompts.js', 'js/audio.js', 'js/tts.js', 'js/digest-core.js',
+  'js/digestui.js', 'js/dialogs.js', 'js/export.js', 'js/obsidian.js', 'js/ai.js', 'js/prompts.js', 'js/audio.js', 'js/tts.js', 'js/digest-core.js', 'js/platform.js', 'js/textsel.js', 'js/lookup.js',
   'vendor/pdf.min.mjs', 'vendor/pdf.worker.min.mjs', 'vendor/pdf-lib.esm.min.js', 'vendor/fflate.js',
   'icons/icon-192.png', 'icons/icon-512.png',
 ];

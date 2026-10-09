@@ -8,6 +8,8 @@ import * as AI from './ai.js';
 import { openExportDialog, openObsidianDialog, openMetaDialog, showAiResult, openBriefing } from './dialogs.js';
 import { digestPanel } from './digestui.js';
 import { speak, stopSpeak } from './tts.js';
+import { openExternal, openUri } from './platform.js';
+import { translatePop, wikiPop } from './lookup.js';
 
 export class Reader {
   constructor(app) {
@@ -23,6 +25,12 @@ export class Reader {
     S.on('settings', st => { this.settings = st; this.applyPdfMode(); });
     S.on('annots', () => { if (this.sideTab && this.sideOpen) this.renderSide(); });
     document.addEventListener('selectionchange', debounce(() => this.onSelection(), 220));
+    // enquanto arrasta a seleção, o menu fica escondido; ao soltar, aparece
+    const sc = e => { if (this.root.isConnected && e.target.closest && e.target.closest('.textLayer')) this.selDragging = true; };
+    const up = () => { if (this.selDragging) { this.selDragging = false; setTimeout(() => this.onSelection(), 30); } };
+    document.addEventListener('pointerdown', sc, true);
+    document.addEventListener('pointerup', up, true);
+    document.addEventListener('pointercancel', up, true);
     document.addEventListener('keydown', e => {
       if (!this.root.isConnected) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); }
@@ -259,7 +267,7 @@ export class Reader {
       for (const it of items) {
         const row = h('button.srow', { type: 'button', style: { paddingLeft: (10 + depth * 16) + 'px' }, onclick: async () => {
           if (it.dest) { const d = await resolveDest(v.hd, it.dest); if (d) v.goTo('p' + d.n, d.y, { flash: true }); }
-          else if (it.url) window.open(it.url, '_blank', 'noopener');
+          else if (it.url) openExternal(it.url);
         } }, h('span.grow', it.title));
         if (depth === 0) row.classList.add('bold');
         parent.appendChild(row);
@@ -488,6 +496,7 @@ export class Reader {
   // ---------- seleção de texto ----------
   onSelection() {
     if (!this.root.isConnected || this.tool !== 'read') return;
+    if (this.selDragging) { this.selMenu.classList.remove('show'); return; }   // o menu só aparece ao soltar
     let seg = null, sv = null;
     for (const v of this.viewers) { const s = v.selectionSegments(); if (s) { seg = s; sv = v; break; } }
     if (!seg) { this.hideSel(); return; }
@@ -498,25 +507,63 @@ export class Reader {
 
   hideSel() { this.selMenu.classList.remove('show'); this.sel = null; }
 
-  showSelMenu() {
+  // anotações que já existem sobre o trecho selecionado (para oferecer "desfazer")
+  async existingFor(s) {
+    const list = await S.annots(s.v.doc.id);
+    const hit = a => a.rects && s.segs.some(sg => sg.pageKey === a.pageKey && sg.rects.some(r1 => a.rects.some(r2 => overlap(r1, r2))));
+    const on = list.filter(hit);
+    const hl = on.filter(a => a.kind === 'hl');
+    const dg = await S.digest();
+    const fq = fold(cleanText(s.text)).slice(0, 60);
+    const dItem = dg.items.find(it => it.src.doc === s.v.doc.id && s.segs.some(sg => sg.pageKey === it.pageKey || (it.pageKeyEnd && sg.pageKey === it.pageKeyEnd))
+      && fq.length > 3 && (fold(it.quote).includes(fq) || fq.includes(fold(it.quote).slice(0, 60))));
+    return {
+      mark: hl.find(a => !a.style || a.style === 'highlight'),
+      underline: hl.find(a => a.style === 'underline'),
+      strike: hl.find(a => a.style === 'strike'),
+      note: hl.find(a => a.note),
+      voice: hl.find(a => a.audioId),
+      anyHl: hl[0],
+      link: on.find(a => a.kind === 'link'),
+      digest: dItem,
+    };
+  }
+
+  async showSelMenu() {
+    const s = this.sel;
+    const ex = await this.existingFor(s);
+    if (this.sel !== s) return;
+    this.selEx = ex;
     const m = this.selMenu;
     clear(m);
     const row1 = h('div.selrow');
-    for (const c of CATS) row1.appendChild(h('button.catbtn', { type: 'button', title: 'Destacar: ' + c.label, 'aria-label': 'Destacar como ' + c.label, style: { background: c.color }, onclick: () => this.highlight({ cat: c.id }) }, c.sym || ''));
+    for (const c of CATS) {
+      const isOn = ex.mark && (ex.mark.cat || '') === c.id;
+      row1.appendChild(h('button.catbtn' + (isOn ? '.on' : ''), {
+        type: 'button', title: isOn ? 'Tirar destaque' : 'Destacar: ' + c.label, 'aria-label': isOn ? 'Tirar destaque ' + c.label : 'Destacar como ' + c.label,
+        style: { background: c.color }, onclick: () => isOn ? this.undoAnn(ex.mark, 'destaque') : this.highlight({ cat: c.id }),
+      }, isOn ? '✕' : (c.sym || '')));
+    }
     row1.appendChild(h('span.vsep'));
-    row1.appendChild(btn('underline', '', () => this.highlight({ style: 'underline' }), { iconOnly: true, title: 'Sublinhar', cls: 'mbtn' }));
-    row1.appendChild(btn('strike', '', () => this.highlight({ style: 'strike' }), { iconOnly: true, title: 'Tachar', cls: 'mbtn' }));
+    const tog = (key, ic, verb, noun) => {
+      const a = ex[key];
+      return btn(ic, '', () => a ? this.undoAnn(a, noun) : this.highlight({ style: key }), { iconOnly: true, title: a ? 'Tirar ' + noun : verb, cls: 'mbtn' + (a ? ' on' : '') });
+    };
+    row1.appendChild(tog('underline', 'underline', 'Sublinhar', 'sublinhado'));
+    row1.appendChild(tog('strike', 'strike', 'Tachar', 'tachado'));
     const pending = this.digestPending;
+    const act = (on, ic, label, offLabel, fnOn, fnOff) => btn(ic, on ? offLabel : label, on ? fnOff : fnOn, { cls: 'mbtn lbl' + (on ? ' undo' : '') });
     const row2 = h('div.selrow',
-      btn('digest', pending ? 'Continuar' : 'Digest', () => this.toDigest(), { cls: 'mbtn lbl' + (pending ? ' hot' : '') }),
-      btn('note', 'Nota', () => this.selNote(), { cls: 'mbtn lbl' }),
-      btn('mic', 'Voz', () => this.selVoice(), { cls: 'mbtn lbl' }),
-      btn('link', 'Link', () => { const s = this.sel; this.linkBuilder(s.v, { pageKey: s.segs[0].pageKey, rects: s.segs[0].rects, text: cleanText(s.text) }); }, { cls: 'mbtn lbl' }),
+      pending ? btn('digest', 'Continuar', () => this.toDigest(), { cls: 'mbtn lbl hot' })
+        : act(!!ex.digest, 'digest', 'Digest', 'Tirar do Digest', () => this.toDigest(), () => this.undoDigest(ex.digest)),
+      act(!!ex.note, 'note', 'Nota', 'Tirar nota', () => this.selNote(), () => this.undoNote(ex.note)),
+      act(!!ex.voice, 'mic', 'Voz', 'Tirar voz', () => this.selVoice(), () => this.undoVoice(ex.voice)),
+      act(!!ex.link, 'link', 'Link', 'Tirar link', () => { const s2 = this.sel; this.linkBuilder(s2.v, { pageKey: s2.segs[0].pageKey, rects: s2.segs[0].rects, text: cleanText(s2.text) }); }, () => this.undoAnn(ex.link, 'link')),
       btn('copy', 'Copiar', () => { copyText(cleanText(this.sel.text)); toast('Copiado.'); this.clearSel(); }, { cls: 'mbtn lbl' }),
       btn('speak', 'Ouvir', () => { speak(cleanText(this.sel.text)); }, { cls: 'mbtn lbl' }),
-      btn('translate', 'Traduzir', () => { AI.googleTranslate(cleanText(this.sel.text)); }, { cls: 'mbtn lbl' }),
+      btn('translate', 'Traduzir', () => { const b2 = this.sel.box; translatePop(cleanText(this.sel.text), b2, this.selDoc()); }, { cls: 'mbtn lbl' }),
+      btn('wiki', 'Wikipédia', () => { const b2 = this.sel.box; wikiPop(cleanText(this.sel.text), b2); }, { cls: 'mbtn lbl' }),
       btn('ai', 'IA', e => this.aiMenu(e), { cls: 'mbtn lbl' }),
-      btn('chat', 'Claude', () => this.toClaude(), { cls: 'mbtn lbl' }),
     );
     m.append(row1, row2);
     m.classList.add('show');
@@ -528,16 +575,53 @@ export class Reader {
     m.style.left = Math.max(8, Math.min(innerWidth - mr.width - 8, (b.left + b.right) / 2 - mr.width / 2)) + 'px';
   }
 
+  selDoc() { return this.sel ? this.sel.v.doc : this.doc; }
+
   clearSel() { window.getSelection().removeAllRanges(); this.hideSel(); }
+
+  async undoAnn(a, what) {
+    if (a.kind === 'hl' && (a.note || a.audioId) && !(await confirmBox('Tirar ' + what, 'Este destaque tem nota ou nota de voz, que também serão apagadas.', 'Tirar', true))) return;
+    await S.delAnnot(a);
+    if (a.kind === 'link') this.app.refreshLinkIndex();
+    toast('Removido: ' + what + '. (Desfazer na barra lateral traz de volta.)');
+    this.clearSel();
+  }
+
+  async undoNote(a) {
+    a.note = '';
+    if (a.madeBy === 'note' && !a.cat && !a.audioId) await S.delAnnot(a); else await S.putAnnot(a);
+    toast('Nota removida.'); this.clearSel();
+  }
+
+  async undoVoice(a) {
+    a.audioId = null; a.audioDur = 0;
+    if (a.madeBy === 'voice' && !a.cat && !a.note) await S.delAnnot(a); else await S.putAnnot(a);
+    toast('Nota de voz removida.'); this.clearSel();
+  }
+
+  async undoDigest(it) {
+    if (!(await confirmBox('Tirar do Digest', 'Remover este trecho do Digest?\n“' + (it.quote || '').slice(0, 120) + '”', 'Remover', true))) return;
+    await S.saveDigest(dgDelete(await S.digest(), it.id));
+    toast('Removido do Digest.'); this.clearSel();
+  }
 
   async highlight(opt) {
     const s = this.sel; if (!s) return;
+    const ex = this.selEx || {};
+    // já existe destaque no trecho: muda o tipo/estilo em vez de duplicar
+    const same = opt.style === 'underline' ? ex.underline : opt.style === 'strike' ? ex.strike : (opt.madeBy ? ex.anyHl : ex.mark);
+    if (same) {
+      if (opt.cat !== undefined && !opt.madeBy) { same.cat = opt.cat; same.color = null; await S.putAnnot(same); }
+      this.clearSel();
+      return same;
+    }
     const group = s.segs.length > 1 ? uid('g') : undefined;
     const rec = this.recorder.stamp(s.v.doc.id);
     let first = null;
     for (let i = 0; i < s.segs.length; i++) {
       const sg = s.segs[i];
       const a = { kind: 'hl', docId: s.v.doc.id, pageKey: sg.pageKey, rects: sg.rects, text: i === 0 ? cleanText(s.text) : '(continuação)', cat: opt.cat || '', style: opt.style || 'highlight', group };
+      if (opt.madeBy) a.madeBy = opt.madeBy;
       if (rec) a.rec = rec;
       await S.putAnnot(a);
       if (!first) first = a;
@@ -548,15 +632,16 @@ export class Reader {
 
   async selNote() {
     const s = this.sel; if (!s) return;
-    const a = await this.highlight({ cat: '' });
+    const a = await this.highlight({ cat: '', madeBy: 'note' });
     this.editNote(a);
   }
 
   async selVoice() {
     const s = this.sel; if (!s) return;
-    const a = await this.highlight({ cat: '' });
+    const a = await this.highlight({ cat: '', madeBy: 'voice' });
     const r = await recordVoiceNote('Nota de voz sobre o trecho');
     if (r) { a.audioId = r.audioId; a.audioDur = r.duration; await S.putAnnot(a); toast('Nota de voz salva.'); }
+    else if (a.madeBy === 'voice' && !a.note && !a.audioId && !a.cat) await S.delAnnot(a, { noUndo: true });
   }
 
   aiMenu(e) {
@@ -566,20 +651,13 @@ export class Reader {
     popMenu(e.clientX, e.clientY - 10, AI.AI_ACTIONS.map(a => ({ label: a.label, onclick: async () => {
       let q = '';
       if (a.id === 'ask') { q = await promptBox('Perguntar à IA', 'Sua pergunta sobre o trecho', '', 'Perguntar', true); if (!q) return; }
-      showAiResult(a.label, signal => AI.runAction(a.id, text, S.docTitle(v.doc) + ' (' + pageLabel(s.segs[0].pageKey) + ')', q, signal), {
+      showAiResult(a.label, async signal => AI.runAction(a.id, text, S.docTitle(v.doc) + ' (' + pageLabel(s.segs[0].pageKey) + ')', q, signal, await AI.contextFor(v.doc)), {
         onSaveNote: async (out) => {
           const hl = { kind: 'hl', docId: v.doc.id, pageKey: s.segs[0].pageKey, rects: s.segs[0].rects, text, cat: '', style: 'highlight', note: (q ? 'Pergunta: ' + q + '\n\n' : '') + a.label + ' (IA):\n' + out };
           await S.putAnnot(hl); toast('Salvo como nota do trecho.');
         },
       });
     } })));
-  }
-
-  async toClaude() {
-    const s = this.sel; if (!s) return;
-    const text = cleanText(s.text);
-    const prompt = 'Estou lendo “' + S.docTitle(s.v.doc) + '” (' + pageLabel(s.segs[0].pageKey) + '). Explique o trecho abaixo para um pesquisador de Física, com rigor:\n\n"' + text + '"';
-    await AI.sendToClaude(prompt);
   }
 
   // ---------- Digest ----------
@@ -668,7 +746,8 @@ export class Reader {
         { icon: 'link', label: 'Criar link a partir deste trecho', onclick: () => this.linkBuilder(v, { pageKey: a.pageKey, rects: a.rects, text: a.text }) },
         { icon: 'copy', label: 'Copiar texto', onclick: () => { copyText(a.text || ''); toast('Copiado.'); } },
         { icon: 'speak', label: 'Ouvir o trecho', onclick: () => speak(a.text || '') },
-        { icon: 'translate', label: 'Google Tradutor', onclick: () => AI.googleTranslate(a.text || '') },
+        { icon: 'translate', label: 'Traduzir', onclick: () => translatePop(a.text || '', { left: x, right: x, top: y, bottom: y }, v.doc) },
+        { icon: 'wiki', label: 'Wikipédia', onclick: () => wikiPop(a.text || '', { left: x, right: x, top: y, bottom: y }) },
         a.rec ? { icon: 'play', label: 'Ouvir a gravação deste momento', onclick: () => this.playRecAt(a.rec) } : null,
         '-',
         { icon: 'trash', label: 'Apagar destaque', danger: true, onclick: () => S.delAnnot(a) },
@@ -701,15 +780,15 @@ export class Reader {
   async followLink(v, a) {
     const t = a.target || {};
     if (t.type === 'page') return this.jump(t, v);
-    if (t.type === 'url') { window.open(t.url, '_blank', 'noopener'); return; }
-    if (t.type === 'obsidian') { window.location.href = t.uri; return; }
+    if (t.type === 'url') { openExternal(t.url); return; }
+    if (t.type === 'obsidian') { openUri(t.uri); return; }
     if (t.type === 'digest') { this.app.showDigest(t.id); return; }
   }
 
   // pré-visualização de referência / figura (links internos do PDF)
   async previewPdfLink(v, l, x, y) {
     if (l.url) {
-      popMenu(x, y, [{ icon: 'fwd', label: 'Abrir ' + l.url.slice(0, 50), onclick: () => window.open(l.url, '_blank', 'noopener') }, { icon: 'copy', label: 'Copiar endereço', onclick: () => copyText(l.url) }]);
+      popMenu(x, y, [{ icon: 'fwd', label: 'Abrir ' + l.url.slice(0, 50), onclick: () => openExternal(l.url) }, { icon: 'copy', label: 'Copiar endereço', onclick: () => copyText(l.url) }]);
       return;
     }
     const d = await resolveDest(v.hd, l.dest);
@@ -839,4 +918,12 @@ export class Reader {
       { icon: 'gear', label: 'Configurações', onclick: () => this.app.openSettings() },
     ]);
   }
+}
+
+// dois retângulos [x,y,w,h] se sobrepõem em boa parte?
+function overlap(a, b) {
+  const x = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]));
+  const y = Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]));
+  const inter = x * y;
+  return inter > 0.4 * Math.min(a[2] * a[3], b[2] * b[3]);
 }
