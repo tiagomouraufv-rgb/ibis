@@ -65,6 +65,7 @@ export async function deleteDoc(id) {
   const anns = await db.byIndex('annots', 'docId', id);
   const recs = await db.byIndex('recordings', 'docId', id);
   const audio = anns.filter(a => a.audioId).map(a => a.audioId).concat(anns.filter(a => a.fileId).map(a => a.fileId)).concat(recs.map(r => r.fileId));
+  if (doc.md) String(doc.md).replace(/\]\((?:img|audio):([\w-]+)\)/g, (m, fid) => { audio.push(fid); return m; });
   await db.delMany('annots', anns.map(a => a.id));
   await db.delMany('recordings', recs.map(r => r.id));
   await db.delMany('files', [doc.fileId].concat(audio).filter(Boolean));
@@ -194,7 +195,7 @@ const DEFAULTS = {
   geminiKey: '', geminiModel: 'gemini-3.8-flash', language: 'português do Brasil',
   researchContext: 'Pesquisador em fotônica e pinças ópticas (UFV): aprisionamento óptico de nanopartículas de semicondutores orgânicos (MEH-PPV/Pdots) e de micropartículas semicondutoras (Ge, Si); modelagem teórica com osciladores de Lorentz no Mathcad Prime; orienta alunos de graduação.',
   translateTo: 'pt', obsidianVault: '', obsidianFolder: 'Leituras', theme: 'auto', pdfMode: 'normal',
-  penOnly: true, syncClientId: '', penWidth: 2, penColor: '#16191D', markerColor: '#FFE36E', ttsRate: 1,
+  penOnly: true, penButtonErase: true, syncClientId: '', penWidth: 2, penColor: '#16191D', markerColor: '#FFE36E', ttsRate: 1,
 };
 let settingsCache = null;
 export async function settings() {

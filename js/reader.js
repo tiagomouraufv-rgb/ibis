@@ -13,6 +13,10 @@ import { translatePop, wikiPop } from './lookup.js';
 import * as NB from './notebook.js';
 import { headings, plainText } from './md.js';
 import { openNotebookExport } from './dialogs.js';
+import { bindTwoFingerSwipe } from './util.js';
+import { parseGo } from './embeds.js';
+import { textTargets } from './textdoc.js';
+import { buildMathPal } from './mathpal.js';
 
 export class Reader {
   constructor(app) {
@@ -120,7 +124,7 @@ export class Reader {
     this.right = h('aside.rpanel');
     this.pill = h('div.pill');
     this.selMenu = h('div.selmenu', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
-    this.mathPal = this.buildMathPal();
+    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal());
     r.append(top, h('div.rbody', rail, this.side, this.panes, this.mathPal, this.right), this.selMenu, this.pill);
     this.bindSwipe();
   }
@@ -134,24 +138,6 @@ export class Reader {
     this.mathPal.classList.toggle('open', on && !this.mathHidden);
   }
   toggleMathPal() { this.mathHidden = !this.mathHidden; this.showTextBar(); }
-
-  buildMathPal() {
-    const G = [
-      ['Letras gregas', [['α', '\\alpha'], ['β', '\\beta'], ['γ', '\\gamma'], ['δ', '\\delta'], ['ε', '\\varepsilon'], ['ζ', '\\zeta'], ['η', '\\eta'], ['θ', '\\theta'], ['κ', '\\kappa'], ['λ', '\\lambda'], ['μ', '\\mu'], ['ν', '\\nu'], ['ξ', '\\xi'], ['π', '\\pi'], ['ρ', '\\rho'], ['σ', '\\sigma'], ['τ', '\\tau'], ['φ', '\\varphi'], ['χ', '\\chi'], ['ψ', '\\psi'], ['ω', '\\omega'], ['Γ', '\\Gamma'], ['Δ', '\\Delta'], ['Θ', '\\Theta'], ['Λ', '\\Lambda'], ['Π', '\\Pi'], ['Σ', '\\Sigma'], ['Φ', '\\Phi'], ['Ψ', '\\Psi'], ['Ω', '\\Omega']]],
-      ['Cálculo', [['∫', '\\int_{@}^{}'], ['∫ab', '\\int_{a}^{b} @ \\, dx'], ['∬', '\\iint'], ['∮', '\\oint'], ['∑', '\\sum_{@}^{}'], ['∏', '\\prod_{@}^{}'], ['lim', '\\lim_{@ \\to }'], ['∂', '\\partial'], ['∇', '\\nabla'], ['∇×', '\\nabla \\times'], ['∇·', '\\nabla \\cdot'], ['∇²', '\\nabla^2'], ['d/dx', '\\frac{d@}{dx}'], ['∂/∂x', '\\frac{\\partial @}{\\partial x}'], ['∞', '\\infty'], ['ẋ', '\\dot{@}']]],
-      ['Estrutura', [['a/b', '\\frac{@}{}'], ['x²', '^{@}'], ['xₙ', '_{@}'], ['√', '\\sqrt{@}'], ['ⁿ√', '\\sqrt[n]{@}'], ['( )', '\\left( @ \\right)'], ['[ ]', '\\left[ @ \\right]'], ['| |', '\\left| @ \\right|'], ['⟨ ⟩', '\\langle @ \\rangle'], ['matriz', '\\begin{pmatrix} @ & \\\\  & \\end{pmatrix}'], ['casos', '\\begin{cases} @ & \\\\  & \\end{cases}'], ['texto', '\\text{@}']]],
-      ['Vetores', [['v⃗', '\\vec{@}'], ['x̂', '\\hat{@}'], ['𝐯', '\\mathbf{@}'], ['·', '\\cdot'], ['×', '\\times'], ['⊗', '\\otimes'], ['†', '^\\dagger'], ['*', '^*'], ['‖ ‖', '\\| @ \\|'], ['⟨|', '\\langle @ |'], ['|⟩', '| @ \\rangle'], ['ℏ', '\\hbar']]],
-      ['Relações', [['≠', '\\neq'], ['≈', '\\approx'], ['≡', '\\equiv'], ['∝', '\\propto'], ['≤', '\\leq'], ['≥', '\\geq'], ['≪', '\\ll'], ['≫', '\\gg'], ['±', '\\pm'], ['∓', '\\mp'], ['→', '\\to'], ['⇒', '\\Rightarrow'], ['⇔', '\\Leftrightarrow'], ['∈', '\\in'], ['⊂', '\\subset'], ['∀', '\\forall'], ['∃', '\\exists'], ['°', '^\\circ']]],
-      ['Funções', [['eˣ', 'e^{@}'], ['ln', '\\ln'], ['log', '\\log'], ['exp', '\\exp'], ['sin', '\\sin'], ['cos', '\\cos'], ['tan', '\\tan'], ['Re', '\\mathrm{Re}'], ['Im', '\\mathrm{Im}'], ['ε₀', '\\varepsilon_0'], ['μ₀', '\\mu_0'], ['(n)', '\\eqn']]],
-    ];
-    const pal = h('aside.mathpal', { 'aria-label': 'Símbolos de matemática' },
-      h('div.mphead', h('b', 'Matemática'), h('button.ibtn.small', { type: 'button', title: 'Esconder', 'aria-label': 'Esconder', onclick: () => this.toggleMathPal() }, icon('close', 16))));
-    for (const [title, items] of G) {
-      pal.appendChild(h('div.mpsec', title));
-      pal.appendChild(h('div.mpgrid', items.map(([l, code]) => h('button.mpbtn', { type: 'button', title: code.replace('@', '…'), onpointerdown: e => e.preventDefault(), onclick: () => this.textEditor.insertMath(code) }, l))));
-    }
-    return pal;
-  }
 
   // ---------- arquivos recentes (troca rápida) ----------
   async noteRecent(id) {
@@ -169,57 +155,39 @@ export class Reader {
   }
   async switchTo(id) {
     const v = this.active;
-    if (v && v.doc) { v.doc.lastKey = v.currentKey(); v.doc.lastY = v.currentOffset(); await S.saveDoc(v.doc); }
+    if (this.root.isConnected && v && v.doc) { v.doc.lastKey = v.currentKey(); v.doc.lastY = v.currentOffset(); await S.saveDoc(v.doc); }
     if (this.textEditor.active) await this.textEditor.close();
     await this.app.openDoc(id);
     const d = await S.getDoc(id);
     if (d) toast('↔ ' + S.docTitle(d), 1600);
   }
-  async quickSwitch() {
-    const list = (await this.recentDocs()).filter(d => !this.doc || d.id !== this.doc.id);
+  async quickSwitch(curId) {
+    curId = curId || (this.root.isConnected && this.doc ? this.doc.id : '');
+    const list = (await this.recentDocs()).filter(d => d.id !== curId);
     if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
     this.switchTo(list[0].id);
   }
-  async recentMenu(e) {
+  async recentMenu(e, curId) {
     document.querySelectorAll('.recentbar').forEach(x => x.remove());
-    const list = (await this.recentDocs()).filter(d => !this.doc || d.id !== this.doc.id).slice(0, 8);
+    curId = curId || (this.root.isConnected && this.doc ? this.doc.id : '');
+    const list = (await this.recentDocs()).filter(d => d.id !== curId).slice(0, 8);
     if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
     const bar = h('div.recentbar', { role: 'dialog', 'aria-label': 'Arquivos recentes' },
       h('div.rbhead', h('b', 'Recentes'), h('span.muted', 'Dica: deslize dois dedos para a esquerda na página para voltar ao anterior'), h('div.grow'), btn('close', '', () => bar.remove(), { iconOnly: true, title: 'Fechar' })),
       h('div.rbrow', list.map((d, i) => {
         const th = h('div.rbthumb');
         this.app.library.thumb(d, th).catch(() => {});
-        return h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { bar.remove(); this.switchTo(d.id); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : 'PDF'));
+        return h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { bar.remove(); this.switchTo(d.id); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF'));
       })));
-    this.root.appendChild(bar);
+    document.body.appendChild(bar);
     setTimeout(() => {
       const off = ev => { if (!bar.contains(ev.target)) { bar.remove(); document.removeEventListener('pointerdown', off, true); } };
       document.addEventListener('pointerdown', off, true);
     }, 0);
   }
   // dois dedos deslizando na horizontal: esquerda = arquivo anterior; direita = lista de recentes
-  bindSwipe() {
-    let st = null;
-    const pos = t => [...t].map(x => ({ x: x.clientX, y: x.clientY }));
-    const dist = p => Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
-    this.panes.addEventListener('touchstart', e => {
-      if (e.touches.length === 2) st = { p0: pos(e.touches), p1: pos(e.touches), t: Date.now() };
-      else if (e.touches.length > 2) st = null;
-    }, { passive: true });
-    this.panes.addEventListener('touchmove', e => { if (st && e.touches.length === 2) st.p1 = pos(e.touches); }, { passive: true });
-    const end = e => {
-      if (!st || e.touches.length > 0 && e.touches.length !== 1) return;
-      const s0 = st; st = null;
-      const dx = [0, 1].map(i => s0.p1[i].x - s0.p0[i].x), dy = [0, 1].map(i => s0.p1[i].y - s0.p0[i].y);
-      const ax = (dx[0] + dx[1]) / 2, ay = (dy[0] + dy[1]) / 2;
-      const same = Math.sign(dx[0]) === Math.sign(dx[1]);
-      const pinch = Math.abs(dist(s0.p1) - dist(s0.p0)) / Math.max(1, dist(s0.p0));
-      if (!same || Math.abs(ax) < 120 || Math.abs(ay) > Math.abs(ax) * 0.6 || pinch > 0.3 || Date.now() - s0.t > 900) return;
-      if (ax < 0) this.quickSwitch(); else this.recentMenu();
-    };
-    this.panes.addEventListener('touchend', end, { passive: true });
-    this.panes.addEventListener('touchcancel', () => { st = null; }, { passive: true });
-  }
+  bindSwipe() { bindTwoFingerSwipe(this.panes, () => this.quickSwitch(), () => this.recentMenu()); }
+
 
   async open(doc, at) {
     this.settings = await S.settings();
@@ -355,6 +323,7 @@ export class Reader {
     if (target.docId === v.doc.id) { v.goTo(target.pageKey, target.y || 0, { flash: true }); this.onNav(v); return; }
     const d = await S.getDoc(target.docId);
     if (!d) { toast('O documento de destino não está mais na biblioteca.'); return; }
+    if (d.kind === 'text') { this.app.openAt(d.id, target.pageKey, target.y); return; }
     if (this.viewers.length > 1) {
       const other = this.viewers.find(x => x !== v);
       if (other.doc && other.doc.id === d.id) other.goTo(target.pageKey, target.y || 0, { flash: true });
@@ -1000,7 +969,7 @@ export class Reader {
     const state = { docId: v.doc.id, pageKey: v.currentKey(), y: 0, url: 'https://', file: '', digestId: '' };
     const pageSelect = (pages, doc) => {
       const sel = h('select');
-      for (const p of pages) sel.appendChild(h('option', { value: p.key }, p.kind === 'pdf' ? 'Página ' + p.n : p.kind === 'nb' ? (p.n ? 'Página ' + p.n : 'Capa') : 'Página em branco (depois da ' + (doc.blanks.find(b => 'b' + b.id === p.key) || {}).after + ')'));
+      for (const p of pages) sel.appendChild(h('option', { value: p.key }, p.kind === 'pdf' ? 'Página ' + p.n : p.kind === 'hd' ? p.label : p.kind === 'nb' ? (p.n ? 'Página ' + p.n : 'Capa') : 'Página em branco (depois da ' + (doc.blanks.find(b => 'b' + b.id === p.key) || {}).after + ')'));
       if (!pages.some(p => p.key === state.pageKey) && pages[0]) state.pageKey = pages[0].key;
       sel.value = state.pageKey;
       sel.addEventListener('change', () => { state.pageKey = sel.value; state.y = 0; });
@@ -1020,7 +989,7 @@ export class Reader {
         }
         const d = docs.find(x => x.id === state.docId) || v.doc;
         let pages;
-        try { pages = NB.isNotebook(d) ? NB.nbPageList(d) : pageList(d, await openPdf(d)); }
+        try { pages = NB.isNotebook(d) ? NB.nbPageList(d) : d.kind === 'text' ? textTargets(d) : pageList(d, await openPdf(d)); }
         catch (e) { panel.appendChild(h('p.err', 'Não consegui abrir este documento: ' + e.message)); return; }
         panel.appendChild(h('label.field', h('span', 'Página'), pageSelect(pages, d)));
         const bms = d.bookmarks || [];
@@ -1148,7 +1117,17 @@ export class Reader {
 
   openLink(href) {
     if (!href) return;
-    if (/^https?:|^mailto:|^obsidian:/i.test(href)) openExternal(href);
+    const g = parseGo(href);
+    if (g) { this.jump({ docId: g.docId, pageKey: g.key || '', y: g.y }); return; }
+    if (/^#h-/.test(href) && this.active && NB.isNotebook(this.doc)) {
+      const v = this.active;
+      const b = NB.readingOrder(v.doc, (v.anns || []).filter(a => a.kind === 'tbox')).find(a => headings(a.md || '').some(x => x.id === href.slice(1) || href.slice(1).startsWith(x.id + '-')));
+      if (b) { v.goTo(b.pageKey, b.y, { flash: true }); this.onNav(v); } else toast('Título não encontrado neste caderno.');
+      return;
+    }
+    if (/^#dg=/.test(href)) { this.app.showDigest(href.slice(4)); return; }
+    if (/^#ob=/.test(href)) { openUri('obsidian://' + decodeURIComponent(href.slice(4))); return; }
+    if (/^https?:|^mailto:/i.test(href)) openExternal(href);
   }
 
   onObjectSelection(v, sel, x, y) {

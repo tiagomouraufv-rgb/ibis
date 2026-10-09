@@ -112,6 +112,11 @@ export async function vaultZip(docIds) {
   const files = {};
   const docs = (await S.allDocs()).filter(d => !docIds || docIds.includes(d.id));
   for (const d of docs) {
+    if (d.kind === 'text') {
+      const TX = await import('./textdoc.js');
+      Object.assign(files, await TX.textObsidianFiles(d, 'Textos'));
+      continue;
+    }
     if (d.kind === 'notebook') {
       const NB = await import('./notebook.js');
       Object.assign(files, await NB.notebookObsidianFiles(d, 'Cadernos'));

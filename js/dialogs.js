@@ -216,6 +216,7 @@ export async function openSettings(tab) {
   const inp = (k, label, type = 'text', ph = '') => { f[k] = h('input', { type, placeholder: ph }); f[k].value = st[k] || ''; return h('label.field', h('span', label), f[k]); };
   const ctx = h('textarea', { rows: 4 }); ctx.value = st.researchContext;
   const pen = h('input', { type: 'checkbox' }); pen.checked = st.penOnly;
+  const penEr = h('input', { type: 'checkbox' }); penEr.checked = st.penButtonErase !== false;
   const theme = h('select', ['auto', 'claro', 'escuro'].map(t => h('option', { value: t }, { auto: 'Automático (igual ao sistema)', claro: 'Claro', escuro: 'Escuro' }[t]))); theme.value = st.theme;
   const rate = h('input', { type: 'range', min: 0.6, max: 1.6, step: 0.1 }); rate.value = st.ttsRate || 1;
   const testOut = h('span.muted');
@@ -223,6 +224,7 @@ export async function openSettings(tab) {
     geral: h('div',
       h('h3', 'Caneta'),
       h('label.check', pen, h('span', 'Só a S Pen escreve (o dedo arrasta e dá zoom)')),
+      h('label.check', penEr, h('span', 'Botão da S Pen e ponta-borracha da caneta (ex.: reMarkable 2) apagam')),
       h('h3', 'Aparência'),
       h('label.field', h('span', 'Tema do app'), theme),
       h('label.field', h('span', 'Velocidade da leitura em voz alta'), rate),
@@ -259,7 +261,7 @@ export async function openSettings(tab) {
   modal('Configurações', h('div.settings', tabRow, holder), [
     { label: 'Cancelar' },
     { label: 'Salvar', primary: true, onclick: async c => {
-      const p = { researchContext: ctx.value, penOnly: pen.checked, theme: theme.value, ttsRate: +rate.value };
+      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, theme: theme.value, ttsRate: +rate.value };
       for (const k in f) p[k] = f[k].value.trim();
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
@@ -314,6 +316,7 @@ function guideNodes() {
         'O botão ☰ no topo abre o painel lateral: Sumário, Páginas, Anotações, Busca e Ligações.')),
     sec('Caneta (S Pen) e dedo',
       ul('Com Caneta, Marca-texto ou Borracha, só a S Pen escreve. O dedo arrasta e dois dedos dão zoom.',
+        'Apagar sem trocar de ferramenta: aperte o botão lateral da S Pen enquanto passa a ponta no traço, ou use a ponta-borracha de canetas que têm uma (como a do reMarkable 2). Funciona em qualquer ferramenta. Dá para desligar na aba Geral.',
         'Se quiser escrever com o dedo, desligue “Só a S Pen escreve” na aba Geral.',
         'Desfazer e refazer ficam na barra da esquerda.',
         'Margem expandida (ícone de página com margem) abre espaço ao lado da página para escrever.')),
@@ -330,17 +333,31 @@ function guideNodes() {
         'Largura da caixa: “↔” ocupa a largura toda da página, “½” a metade; ou arraste as alças azuis nas bordas da caixa.',
         'Painel de Matemática: toque no símbolo e o código LaTeX entra onde está o cursor (fora de uma equação, já entra entre $ $). Em ∫, ∑, a/b e parecidos, o cursor fica no primeiro espaço a preencher. “Σ” na barra mostra/esconde o painel.',
         'Para editar de novo, toque na caixa (na ferramenta Ler ou Texto).',
+        'Vídeo do YouTube numa caixa: escreva o endereço do vídeo sozinho numa linha. [[sumario]] numa caixa mostra o sumário do caderno.',
         'Imagem (ícone de foto): escolha um arquivo/foto ou cole. No PC, Ctrl+V cola direto na página.',
-        'Laço: contorne traços, imagens ou caixas para mover (arrastando), duplicar, mudar a cor ou apagar. Uma imagem tocada também fica selecionada; o quadradinho do canto muda o tamanho.',
+        'Laço: desenhe à mão livre em volta do que quer pegar. Tudo o que tiver uma parte dentro da forma entra (traços, imagens, caixas de texto, notas, links), e a seleção fica com a forma que você desenhou. Arraste por dentro para mover; o menu tem duplicar, mudar a cor, criar link e apagar.',
+        'Imagens e GIFs: o GIF continua animado na página.',
         'Nota (balão): toque no lugar para uma nota escrita ou de voz. O botão ● grava a aula enquanto você escreve.',
         'Menu ⋯ de cada página: nova página, duplicar, mudar o modelo, mover, marcar e apagar.')),
     sec('Markdown e equações (como no Obsidian)',
       ul('# Título, ## Subtítulo, **negrito**, *itálico*, ==realce==, - lista, - [ ] tarefa (toque para marcar), > citação, `código`.',
         'Equação no texto: $F = -\\kappa x$. Equação destacada: $$ ... $$ (em linhas próprias).',
-        'Numerar: escreva \\eqn dentro da equação destacada (o botão “(n)” já faz isso). A numeração segue a ordem do caderno.',
-        'Dar nome: \\label{rigidez} dentro da equação. Citar no texto: \\eqref{rigidez} vira “(3)”. O botão “ref” lista os nomes.',
+        'Numerar: com o cursor dentro de uma equação destacada, toque em “(n)” (ele acrescenta \\eqn). Fora de uma equação, “(n)” cria uma equação numerada nova. A numeração segue a ordem do caderno ou do texto.',
+        'Citar: toque em “ref” e escolha a equação na lista, (1), (2)… O app cria o nome (\\label{eq1}) na equação, se ela ainda não tiver, e escreve \\eqref{eq1}, que aparece como “(1)”. Com o cursor dentro de uma equação, “ref” oferece “Numerar e dar nome a esta equação”.',
+        'Tabela: botão ▦ e escolha linhas × colunas na grade. No documento de texto, toque na tabela pronta para editar as células numa janela.',
         'Também vale \\begin{equation} ... \\end{equation} (numerada).',
         '“Prévia” mostra o resultado enquanto você digita. No Obsidian, a numeração vai como \\tag{n}.')),
+    sec('Documento de texto (Novo texto)',
+      ol('Na Biblioteca, toque em “Novo texto”. É um documento corrido, todo em Markdown, como no Obsidian.',
+        'Toque num parágrafo para editá-lo: ele vira texto com os símbolos (#, **, $…$). Toque fora (ou Esc) e ele volta formatado.',
+        'Enter duas vezes começa um parágrafo novo. Listas continuam sozinhas ao dar Enter. ↑ no começo e ↓ no fim passam para o bloco anterior/seguinte. Toque no fim da página para continuar escrevendo.',
+        'A barra do topo formata; a barra da esquerda insere: imagem ou GIF, vídeo do YouTube, nota de voz, caixa de nota, tabela, link e sumário. À direita, o painel de Matemática.',
+        'Vídeo: cole o endereço do YouTube; aparece a miniatura e o vídeo toca aqui mesmo (com “Abrir no YouTube” ao lado).',
+        'Links: para uma seção deste texto ([[#Título]]), outro PDF, caderno ou texto (até a página ou seção), um trecho do Digest, uma nota do Obsidian ou um site. Dos PDFs e cadernos também dá para fazer link para uma seção de um texto.',
+        'Selecione um trecho com o dedo ou o mouse (sem editar): aparecem Digest, Realçar, Link, Nota, Copiar, Traduzir e Wikipédia.',
+        'Sumário: o painel ☰ mostra os títulos em hierarquia (#, ##, ###); o botão Sumário da barra da esquerda põe um sumário dentro do texto.',
+        'Desfazer e refazer ficam no topo da barra da esquerda. “⋯ → Editar tudo como Markdown” abre o texto inteiro numa caixa só.',
+        'Exportar: pacote do Obsidian (.md com imagens, áudios e equações numeradas), só o .md, ou PDF.')),
     sec('Imagens no Digest e recorte de equações',
       ul('No painel do Digest há “Colar imagem” e “Escolher arquivo” (no PC, Ctrl+V também cola).',
         'Ferramenta Recorte (no PDF): desenhe um retângulo em volta da equação ou figura. Depois escolha: enviar ao Digest, inserir num caderno (com a fonte como legenda), copiar ou salvar a imagem.',

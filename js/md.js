@@ -17,6 +17,42 @@ function protectCode(src, store) {
   return src;
 }
 function restoreCode(src, store) { return src.replace(/\u0000C(\d+)\u0000/g, (_, i) => store[+i].raw); }
+// mesmo texto, com o código trocado por espaços (para achar posições no original)
+function blankCode(src) {
+  return src.replace(/```[\s\S]*?```/g, m => ' '.repeat(m.length)).replace(/`[^`\n]+`/g, m => ' '.repeat(m.length));
+}
+
+// título -> identificador (para links internos [[#Título]])
+export function slugify(t) {
+  return 'h-' + String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+}
+
+// YouTube: id e tempo inicial a partir do endereço
+export function youtubeId(url) {
+  const m = String(url || '').match(/(?:youtube\.com\/(?:watch\?(?:[^\s#]*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([\w-]{11})/);
+  if (!m) return null;
+  const t = String(url).match(/[?&#](?:t|start)=(\d+h)?(\d+m)?(\d+)s?/);
+  let sec = 0;
+  if (t) sec = (parseInt(t[1] || '0', 10) * 3600) + (parseInt(t[2] || '0', 10) * 60) + parseInt(t[3] || '0', 10);
+  return { id: m[1], t: sec };
+}
+
+// trechos especiais do app (fora do código): vídeo, imagem, áudio, links internos, sumário
+function embedsIn(s) {
+  // linha só com o endereço do YouTube (ou ![…](endereço)): vira player
+  s = s.replace(/^[ \t]*(?:!\[[^\]\n]*\]\()?<?(https?:\/\/[^\s)>]+)>?\)?[ \t]*$/gm, (m, url) => {
+    const y = youtubeId(url);
+    return y ? '\n<div class="yt" data-yt="' + y.id + '" data-t="' + y.t + '"></div>\n' : m;
+  });
+  s = s.replace(/^[ \t]*!\[([^\]\n]*)\]\(audio:([\w-]+)\)[ \t]*$/gm, (m, alt, id) => '\n<div class="aud" data-audio="' + id + '" data-title="' + escapeHtml(alt || 'Áudio') + '"></div>\n');
+  s = s.replace(/\]\(img:([\w-]+)\)/g, '](#img-$1)');
+  s = s.replace(/\]\(leitor:\/\/([\w-]+)\/([\w-]*)(?:\?y=(\d+))?\)/g, (m, d, k, y) => '](#go=' + d + '~' + (k || '') + '~' + (y || 0) + ')');
+  s = s.replace(/\]\(digest:([\w-]+)\)/g, '](#dg=$1)');
+  s = s.replace(/\]\(obsidian:\/\/([^)\s]+)\)/g, (x, r) => '](#ob=' + encodeURIComponent(r) + ')');
+  s = s.replace(/\[\[#([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/g, (m, t, label) => '[' + (label || t) + '](#' + slugify(t) + ')');
+  s = s.replace(/^[ \t]*\[\[(?:sumario|sumário|toc)\]\][ \t]*$/gim, '\n<div class="toc-ph"></div>\n');
+  return s;
+}
 
 // percorre as equações destacadas e decide quais são numeradas
 function displayBlocks(src) {
@@ -65,6 +101,7 @@ function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;
 export function renderMarkdown(src, start = 0, labels = {}) {
   const code = [];
   let s = protectCode(String(src || ''), code);
+  s = embedsIn(s);
   const math = [];
   let n = start;
   s = s.replace(DISPLAY_RE, (m, a, env, b, c) => {
@@ -85,7 +122,7 @@ export function renderMarkdown(src, start = 0, labels = {}) {
   s = s.replace(/==([^=\n]+)==/g, '<mark>$1</mark>');
   s = restoreCode(s, code);
   let html = marked.parse(s);
-  html = DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ['checked', 'disabled', 'type'] });
+  html = DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ['checked', 'disabled', 'type', 'data-yt', 'data-t', 'data-audio', 'data-title'] });
   html = html.replace(/<p>KATEXPHD(\d+)X<\/p>/g, (_, i) => math[+i]).replace(/KATEXPH[DI](\d+)X/g, (_, i) => math[+i]);
   return html;
 }
@@ -107,6 +144,29 @@ export function markdownForObsidian(src, start = 0, labels = {}) {
   return restoreCode(s, code);
 }
 
+// todas as equações numeradas, na ordem, com a posição onde cabe um \label{} (antes do fechamento)
+// sources: [{ id, md }]. Retorna [{ id, n, label, tex, at }]
+export function listEquations(sources) {
+  const out = [];
+  let n = 0;
+  for (const s of sources) {
+    const blank = blankCode(String(s.md || ''));
+    const re = new RegExp(DISPLAY_RE.source, 'g');
+    let m;
+    while ((m = re.exec(blank))) {
+      const [all, a, env, b, c] = m;
+      const tex = a !== undefined ? a : (b !== undefined ? b : c);
+      const lab = tex.match(/\\label\{([^}]+)\}/);
+      const numbered = /\\eqn\b/.test(tex) || env === 'equation' || (lab && env !== 'equation*');
+      if (!numbered) continue;
+      n++;
+      const close = b !== undefined ? all.lastIndexOf('\\end') : all.length - 2;
+      out.push({ id: s.id, n, label: lab ? lab[1] : null, tex: cleanTex(String(s.md).slice(m.index, m.index + all.length).replace(/^\$\$|\$\$$|^\\\[|\\\]$/g, '').replace(/\\(begin|end)\{equation\*?\}/g, '')), at: m.index + close });
+    }
+  }
+  return out;
+}
+
 // alterna a n-ésima caixa de seleção "- [ ]" do texto
 export function toggleTask(src, idx) {
   let i = -1;
@@ -115,10 +175,17 @@ export function toggleTask(src, idx) {
 
 export function headings(src) {
   const out = [];
-  String(src || '').replace(/^(#{1,4})\s+(.+)$/gm, (m, h, t) => { out.push({ level: h.length, text: t.replace(/[*_`=$]/g, '') }); return m; });
+  const used = {};
+  blankCode(String(src || '')).replace(/^(#{1,6})\s+(.+)$/gm, (m, h, t) => {
+    const text = t.replace(/[*_`=$]/g, '').trim();
+    let id = slugify(text);
+    if (used[id]) id += '-' + (++used[id]); else used[id] = 1;
+    out.push({ level: h.length, text, id });
+    return m;
+  });
   return out;
 }
 
 export function plainText(src) {
-  return String(src || '').replace(/\$\$[\s\S]*?\$\$/g, ' [equação] ').replace(/[#*_>`=]/g, '').replace(/\s+/g, ' ').trim();
+  return String(src || '').replace(/\[!\w+\]/g, '').replace(/!\[[^\]]*\]\((?:img|audio):[\w-]+\)/g, ' ').replace(/\$\$[\s\S]*?\$\$/g, ' [equação] ').replace(/[#*_>`=]/g, '').replace(/\s+/g, ' ').trim();
 }

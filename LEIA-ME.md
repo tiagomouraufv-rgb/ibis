@@ -1,10 +1,11 @@
-# Leitor de Pesquisa 0.4.0
+# Leitor de Pesquisa 0.5.0
 
 App de leitura de PDF para o Galaxy Tab S11 (funciona no Chrome e pode ser instalado como app).
 Seus PDFs, anotações, áudios e o Digest ficam guardados no aparelho (no armazenamento do Chrome) e, se você ligar a sincronização, numa pasta do **seu** Google Drive.
 
 ## O que tem nesta versão
 
+- **Novo na 0.5.0:** documento de texto em Markdown (equações numeradas, tabelas, imagens/GIF, vídeo do YouTube, notas de voz, caixas de nota, links e sumário automático); botões (n) e ref que numeram e citam equações sozinhos; laço em forma livre que pega tudo o que está dentro; botão da S Pen e ponta-borracha apagam; GIFs animados no caderno.
 - **Novo na 0.4.0:** sincronização pelo Google Drive (web e Android, com login da conta Google); capa estilo "composition book" com cor à escolha; barra de texto no topo e largura da caixa ajustável; painel de símbolos de matemática; links funcionando nos cadernos; troca rápida entre arquivos (dois dedos ou botão ⇆); filtro por projeto no Digest.
 - Leitor de PDF com zoom por pinça, sumário do PDF, miniaturas, marcadores e busca.
 - Cadernos (estilo GoodNotes): S Pen, caixas de texto em Markdown com equações LaTeX numeradas, imagens, áudio, laço, modelos de página; exporta PDF e Obsidian.

@@ -3,7 +3,9 @@ import { pdfjs, openPdf, getPage, pageList, pageLinks } from './pdfdoc.js';
 import * as S from './store.js';
 import { h, clear, icon, catInfo, uid } from './util.js';
 import { registerTextLayer, unregisterTextLayer } from './textsel.js';
-import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl } from './notebook.js';
+import { hydrate } from './embeds.js';
+import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
+import { headings } from './md.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -109,7 +111,8 @@ export class Viewer {
       const svg = sv('svg', { class: 'ov' });
       const live = sv('g', { class: 'live' });
       const tbl = h('div.tbl');
-      const slot = h('div.slot', pg, mg);
+      const iml = h('div.iml');   // imagens (HTML, para GIFs animados)
+      const slot = h('div.slot', pg, mg, iml);
       slot.appendChild(svg);
       slot.appendChild(tbl);
       svg.appendChild(sv('g', { class: 'ann' }));
@@ -118,7 +121,7 @@ export class Viewer {
       wrap.dataset.key = p.key;
       slot.dataset.key = p.key;
       this.pagesEl.appendChild(wrap);
-      const s = { p, wrap, slot, pg, mg, svg, live, head, tbl, rendered: 0, renderTask: null };
+      const s = { p, wrap, slot, pg, mg, svg, live, head, tbl, iml, rendered: 0, renderTask: null };
       this.slots.set(p.key, s);
       this.sizeSlot(s);
       this.io.observe(wrap);
@@ -259,11 +262,16 @@ export class Viewer {
     const g = s.svg.querySelector('g.ann');
     clear(g);
     const list = this.annsOf(s.p.key);
-    for (const a of list.filter(a => a.kind === 'img')) {
-      const url = fileUrlSync(a.fileId);
-      if (!url) { fileUrl(a.fileId).then(u => { if (u) this.drawOverlay(s); }); continue; }
-      const im = sv('image', { href: url, x: a.x, y: a.y, width: a.w, height: a.h, preserveAspectRatio: 'none', 'data-id': a.id });
-      g.appendChild(im);
+    if (s.iml) {
+      clear(s.iml);
+      for (const a of list.filter(a => a.kind === 'img')) {
+        const url = fileUrlSync(a.fileId);
+        if (!url) { fileUrl(a.fileId).then(u => { if (u) this.drawOverlay(s); }); continue; }
+        const im = h('img.nbimg', { src: url, alt: '', draggable: 'false', 'data-id': a.id });
+        im.style.left = `calc(var(--s) * ${a.x}px)`; im.style.top = `calc(var(--s) * ${a.y}px)`;
+        im.style.width = `calc(var(--s) * ${a.w}px)`; im.style.height = `calc(var(--s) * ${a.h}px)`;
+        s.iml.appendChild(im);
+      }
     }
     const hl = list.filter(a => a.kind === 'hl');
     for (const a of hl) {
@@ -288,7 +296,9 @@ export class Viewer {
       g.appendChild(grp);
     }
     for (const a of list.filter(a => a.kind === 'link')) {
-      for (const [x, y, w, hh] of a.rects) g.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'ulink', rx: 1.5 }));
+      const lg = sv('g', { 'data-id': a.id });
+      for (const [x, y, w, hh] of a.rects) lg.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'ulink', rx: 1.5 }));
+      g.appendChild(lg);
     }
     for (const a of list.filter(a => a.kind === 'ink')) {
       const p = sv('path', { d: strokePath(a.pts), stroke: a.color, 'stroke-width': strokeWidth(a), fill: 'none', 'stroke-linecap': a.tool === 'marker' ? 'butt' : 'round', 'stroke-linejoin': 'round', 'data-id': a.id });
@@ -331,13 +341,22 @@ export class Viewer {
       el.style.width = `calc(var(--s) * ${a.w}px)`;
       el.style.fontSize = `calc(var(--s) * ${a.size || TEXT_SIZE}px)`;
       el.innerHTML = renderBoxHtml(a, this.num);
-      el.querySelectorAll('a[href]').forEach(ln => ln.addEventListener('click', ev => { ev.preventDefault(); this.app.openLink && this.app.openLink(ln.getAttribute('href')); }));
-      el.querySelectorAll('input[type=checkbox]').forEach((cb, i) => {
-        cb.disabled = false;
-        cb.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); onTaskClick(a, i); });
-      });
+      hydrate(el, { onLink: href => this.app.openLink && this.app.openLink(href), onTask: i => onTaskClick(a, i), toc: () => this.nbToc() });
       s.tbl.appendChild(el);
     }
+  }
+
+  // sumário automático do caderno ([[sumario]] numa caixa de texto)
+  nbToc() {
+    const boxes = readingOrder(this.doc, (this.anns || []).filter(a => a.kind === 'tbox'));
+    const items = [];
+    for (const b of boxes) for (const x of headings(b.md || '')) items.push({ x, b });
+    if (!items.length) return h('div.toc.muted', 'Sumário: escreva títulos com #, ## ou ### nas caixas de texto.');
+    const pl = nbPageList(this.doc);
+    return h('nav.toc', h('div.toctitle', 'Sumário'), items.map(({ x, b }) => {
+      const p = pl.find(q => q.key === b.pageKey);
+      return h('a.toclvl' + Math.min(x.level, 4), { href: '#' + x.id, onclick: e => { e.preventDefault(); e.stopPropagation(); this.goTo(b.pageKey, b.y, { flash: true }); } }, x.text + (p && p.n ? ' · p. ' + p.n : ''));
+    }));
   }
 
   boxEl(s, id) { return s.tbl.querySelector(`[data-id="${id}"]`); }
@@ -351,16 +370,17 @@ export class Viewer {
       else if (a.kind === 'img') { x0 = Math.min(x0, a.x); y0 = Math.min(y0, a.y); x1 = Math.max(x1, a.x + a.w); y1 = Math.max(y1, a.y + a.h); }
       else if (a.kind === 'tbox') { const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 20; x0 = Math.min(x0, a.x); y0 = Math.min(y0, a.y); x1 = Math.max(x1, a.x + a.w); y1 = Math.max(y1, a.y + hh); }
       else if (a.kind === 'note') { x0 = Math.min(x0, a.x - 9); y0 = Math.min(y0, a.y - 9); x1 = Math.max(x1, a.x + 9); y1 = Math.max(y1, a.y + 9); }
+      else if (a.kind === 'link') for (const [rx, ry, rw, rh] of a.rects) { x0 = Math.min(x0, rx); y0 = Math.min(y0, ry); x1 = Math.max(x1, rx + rw); y1 = Math.max(y1, ry + rh); }
     }
     if (x0 > x1) return null;
     const pad = 6;
     return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
   }
 
-  setSelection(s, ids) {
+  setSelection(s, ids, poly) {
     this.clearSelection();
     if (!ids.size) return;
-    this.sel = { s, ids, bbox: this.bboxOf(s, ids) };
+    this.sel = { s, ids, bbox: this.bboxOf(s, ids), poly: poly && poly.length > 4 ? poly : null };
     if (!this.sel.bbox) { this.sel = null; return; }
     this.drawSelection();
     this.applyMode();
@@ -380,7 +400,9 @@ export class Viewer {
     if (!this.sel || !this.sel.bbox) return;
     const [x, y, w, hh] = this.sel.bbox;
     const g = sv('g', { class: 'selbox' });
-    g.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'selrect' }));
+    // a seleção tem a forma que você desenhou com o laço
+    if (this.sel.poly) g.appendChild(sv('path', { d: 'M' + this.sel.poly.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') + 'Z', class: 'selrect selpoly' }));
+    else g.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'selrect' }));
     const single = this.sel.ids.size === 1 && this.annsOf(this.sel.s.p.key).find(a => this.sel.ids.has(a.id) && (a.kind === 'img' || a.kind === 'tbox'));
     if (single) g.appendChild(sv('rect', { x: x + w - 7, y: y + hh - 7, width: 14, height: 14, class: 'selhandle' }));
     this.sel.single = single || null;
@@ -400,24 +422,30 @@ export class Viewer {
     const [x, y, w, hh] = this.sel.bbox;
     if (this.sel.single && Math.abs(hit.x - (x + w)) < 12 / this.scale + 6 && Math.abs(hit.y - (y + hh)) < 12 / this.scale + 6) return 'resize';
     if (handleOnly) return null;
+    if (this.sel.poly && pointInPoly(this.sel.poly, hit.x, hit.y)) return 'move';
     return hit.x >= x && hit.x <= x + w && hit.y >= y && hit.y <= y + hh ? 'move' : null;
   }
 
+  // laço: pega tudo o que está dentro da forma desenhada (mesmo que só uma parte)
   lassoSelect(s, poly) {
-    const inside = (px, py) => {
-      let c = false;
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const [xi, yi] = poly[i], [xj, yj] = poly[j];
-        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi + 1e-9) + xi)) c = !c;
-      }
-      return c;
+    const inside = (px, py) => pointInPoly(poly, px, py);
+    const rectIn = (x, y, w, hh) => {
+      const pts = [[x + w / 2, y + hh / 2], [x, y], [x + w, y], [x, y + hh], [x + w, y + hh], [x + w / 2, y], [x + w / 2, y + hh], [x, y + hh / 2], [x + w, y + hh / 2]];
+      const n = pts.filter(p => inside(p[0], p[1])).length;
+      return inside(pts[0][0], pts[0][1]) || n >= 2;
     };
     const ids = new Set();
     for (const a of this.annsOf(s.p.key)) {
-      if (a.kind === 'ink') { const n = a.pts.filter(p => inside(p[0], p[1])).length; if (n >= a.pts.length * 0.6) ids.add(a.id); }
-      else if (a.kind === 'img' && inside(a.x + a.w / 2, a.y + a.h / 2)) ids.add(a.id);
-      else if (a.kind === 'tbox') { const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 20; if (inside(a.x + a.w / 2, a.y + Math.min(hh / 2, 20))) ids.add(a.id); }
+      if (a.kind === 'ink') {
+        if (!a.pts.length) continue;
+        const n = a.pts.filter(p => inside(p[0], p[1])).length;
+        const cx = a.pts.reduce((t, p) => t + p[0], 0) / a.pts.length, cy = a.pts.reduce((t, p) => t + p[1], 0) / a.pts.length;
+        if (n >= Math.max(1, a.pts.length * 0.15) || inside(cx, cy)) ids.add(a.id);
+      }
+      else if (a.kind === 'img' && rectIn(a.x, a.y, a.w, a.h)) ids.add(a.id);
+      else if (a.kind === 'tbox') { const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 20; if (rectIn(a.x, a.y, a.w, hh)) ids.add(a.id); }
       else if (a.kind === 'note' && inside(a.x, a.y)) ids.add(a.id);
+      else if (a.kind === 'link' && this.isNb && a.rects.some(r => rectIn(r[0], r[1], r[2], r[3]))) ids.add(a.id);
     }
     return ids;
   }
@@ -427,7 +455,7 @@ export class Viewer {
     for (const id of ids) {
       const e = s.svg.querySelector(`g.ann [data-id="${id}"]`);
       if (e) e.setAttribute('transform', (e.dataset.base0 !== undefined ? e.dataset.base0 : (e.dataset.base0 = e.getAttribute('transform') || '')) + ` translate(${dx} ${dy})`);
-      const b = this.boxEl(s, id);
+      const b = this.boxEl(s, id) || (s.iml && s.iml.querySelector(`[data-id="${id}"]`));
       if (b) b.style.transform = `translate(${dx * this.scale}px, ${dy * this.scale}px)`;
     }
     const sb = s.live.querySelector('.selbox');
@@ -440,9 +468,11 @@ export class Viewer {
     const changed = list.map(a => {
       const c = JSON.parse(JSON.stringify(a));
       if (c.kind === 'ink') c.pts = c.pts.map(p => [+(p[0] + dx).toFixed(2), +(p[1] + dy).toFixed(2), p[2], p[3]]);
+      else if (c.kind === 'link') c.rects = c.rects.map(r => [r[0] + dx, r[1] + dy, r[2], r[3]]);
       else { c.x += dx; c.y += dy; }
       return c;
     });
+    if (this.sel.poly) this.sel.poly = this.sel.poly.map(p => [p[0] + dx, p[1] + dy]);
     await S.putAnnotsGroup(changed);
   }
 
@@ -538,7 +568,7 @@ export class Viewer {
     sc.addEventListener('pointermove', e => this.onMove(e));
     sc.addEventListener('pointerup', e => this.onUp(e));
     sc.addEventListener('pointercancel', e => this.onUp(e, true));
-    sc.addEventListener('contextmenu', e => { if (this.app.tool !== 'read') e.preventDefault(); });
+    sc.addEventListener('contextmenu', e => { if (this.app.tool !== 'read' || Date.now() - (this.lastPen || 0) < 1500) e.preventDefault(); });
     // pinça com dois dedos no modo leitura
     const readMode = () => this.app.tool === 'read';
     sc.addEventListener('touchstart', e => { if (readMode() && e.touches.length === 2) this.pinchStart(e.touches); }, { passive: true });
@@ -576,6 +606,17 @@ export class Viewer {
     if (e.pointerType === 'touch' && this.penDown) return;             // palma da mão encostada enquanto a caneta escreve
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now(), type: e.pointerType, x0: e.clientX, y0: e.clientY });
     const hit = this.slotAt(e.clientX, e.clientY);
+    if (e.pointerType === 'pen') this.lastPen = Date.now();
+    // botão da S Pen apertado ou ponta-borracha (ex.: caneta do reMarkable 2): apaga, em qualquer ferramenta
+    if (hit && isPenEraser(e) && (this.app.settings || {}).penButtonErase !== false) {
+      e.preventDefault();
+      try { this.scroller.setPointerCapture(e.pointerId); } catch (er) {}
+      this.penDown = true;
+      window.getSelection().removeAllRanges();
+      this.op = { type: 'erase', s: hit.s, ids: new Set(), id: e.pointerId };
+      this.eraseAt(hit);
+      return;
+    }
     // objeto selecionado: arrastar move; a alça do canto redimensiona
     if (this.sel && hit && (tool === 'read' || tool === 'lasso' || tool === 'text')) {
       const where = this.inSel(hit);
@@ -663,6 +704,13 @@ export class Viewer {
     const op = this.op;
     if (op && op.id === e.pointerId) {
       e.preventDefault();
+      if (op.type === 'ink' && isPenEraser(e) && (this.app.settings || {}).penButtonErase !== false) {
+        // apertou o botão no meio do traço: vira borracha
+        op.path.remove();
+        this.op = { type: 'erase', s: op.s, ids: new Set(), id: e.pointerId };
+        const hit = this.slotAt(e.clientX, e.clientY); if (hit && hit.s === op.s) this.eraseAt(hit);
+        return;
+      }
       if (op.type === 'ink') this.addPt(e);
       else if (op.type === 'erase') { const hit = this.slotAt(e.clientX, e.clientY); if (hit && hit.s === op.s) this.eraseAt(hit); }
       else if (op.type === 'lasso') {
@@ -675,9 +723,9 @@ export class Viewer {
       } else if (op.type === 'resize' && op.a) {
         const dx = (e.clientX - op.cx0) / this.scale;
         op.nw = Math.max(30, op.a.w + dx);
-        const el = op.a.kind === 'img' ? op.s.svg.querySelector(`g.ann [data-id="${op.a.id}"]`) : this.boxEl(op.s, op.a.id);
-        if (el && op.a.kind === 'img') { el.setAttribute('width', op.nw); el.setAttribute('height', op.a.h * op.nw / op.a.w); }
-        else if (el) el.style.width = `calc(var(--s) * ${op.nw}px)`;
+        const el = op.a.kind === 'img' ? op.s.iml.querySelector(`[data-id="${op.a.id}"]`) : this.boxEl(op.s, op.a.id);
+        if (el) el.style.width = `calc(var(--s) * ${op.nw}px)`;
+        if (el && op.a.kind === 'img') el.style.height = `calc(var(--s) * ${op.a.h * op.nw / op.a.w}px)`;
       }
       else if (op.type === 'rect') {
         const r = op.s.slot.getBoundingClientRect();
@@ -735,7 +783,7 @@ export class Viewer {
       } else if (op.type === 'lasso') {
         op.path.remove();
         const ids = op.pts.length > 4 ? this.lassoSelect(op.s, op.pts) : new Set();
-        if (ids.size) this.setSelection(op.s, ids); else this.clearSelection();
+        if (ids.size) this.setSelection(op.s, ids, op.pts); else this.clearSelection();
       } else if (op.type === 'move') {
         if (!cancelled && (Math.abs(op.dx || 0) > 0.5 || Math.abs(op.dy || 0) > 0.5)) await this.commitMove(op.dx, op.dy);
         else if (this.sel) { this.previewMove(0, 0); this.app.onObjectSelection && this.app.onObjectSelection(this, this.sel, e.clientX, e.clientY); }
@@ -757,7 +805,7 @@ export class Viewer {
     }
     // toque curto: ferramenta Texto cria/edita caixa; no modo leitura abre a anotação/link tocado
     const tap = !cancelled && pp && Date.now() - pp.t < 450 && Math.hypot(e.clientX - pp.x0, e.clientY - pp.y0) < 10;
-    if (tap && e.target.closest && e.target.closest('input, a[href], .tbox.editing')) return;
+    if (tap && e.target.closest && e.target.closest('input, a[href], .tbox.editing, button, iframe, audio, .ytbox, .audbox, nav.toc')) return;
     if (tap && this.app.tool === 'text') {
       const hit = this.slotAt(e.clientX, e.clientY);
       if (hit && this.isNb) this.app.textAt(this, hit);
@@ -826,6 +874,15 @@ export class Viewer {
 
 function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n : p.kind === 'nb' ? (p.tpl === 'cover' ? 'Capa' : 'Página ' + p.n) : 'Página em branco'; }
 
+function isPenEraser(e) { return e.pointerType === 'pen' && (((e.buttons || 0) & 32) || ((e.buttons || 0) & 2) || e.button === 5 || e.button === 2); }
+export function pointInPoly(poly, px, py) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi + 1e-9) + xi)) c = !c;
+  }
+  return c;
+}
 function inRect(x, y, r, pad = 0) { return x >= r[0] - pad && x <= r[0] + r[2] + pad && y >= r[1] - pad && y <= r[1] + r[3] + pad; }
 
 // junta retângulos da mesma linha

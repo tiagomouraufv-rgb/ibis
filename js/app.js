@@ -12,8 +12,9 @@ import { vaultZip } from './obsidian.js';
 import { downloadBlob } from './util.js';
 import { isAndroidApp, b64ToBytes } from './platform.js';
 import { startAutoSync } from './sync.js';
+import { TextScreen } from './textdoc.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 class App {
   constructor() {
@@ -21,6 +22,7 @@ class App {
     this.library = new Library(this);
     this.reader = new Reader(this);
     this.digestScreen = new DigestScreen(this);
+    this.textScreen = new TextScreen(this);
     this.linkIndex = [];
   }
 
@@ -64,13 +66,20 @@ class App {
 
   // botão voltar do Android: fecha janelas, painéis e volta para a biblioteca. Retorna true se tratou.
   androidBack() {
-    const pop = document.querySelector('.popmenu, .refpop, .lookpop');
+    const pop = document.querySelector('.popmenu, .refpop, .lookpop, .recentbar, .tablepick');
     if (pop) { pop.remove(); return true; }
     const mb = [...document.querySelectorAll('.modal-back')].pop();
     if (mb) { const c = mb.querySelector('.modal-head .ibtn'); if (c) c.click(); else mb.remove(); return true; }
     if (this.reader.root.isConnected) {
       if (this.reader.right.classList.contains('open')) { this.reader.right.classList.remove('open'); return true; }
       if (this.reader.sideOpen) { this.reader.toggleSide(); return true; }
+      this.showLibrary(); return true;
+    }
+    if (this.textScreen.root.isConnected) {
+      const t = this.textScreen;
+      if (t.right.classList.contains('open')) { t.right.classList.remove('open'); return true; }
+      if (t.cur) { t.commit(); return true; }
+      if (t.sideOpen) { t.toggleSide(); return true; }
       this.showLibrary(); return true;
     }
     if (this.digestScreen.root.isConnected) { this.showLibrary(); return true; }
@@ -83,7 +92,9 @@ class App {
   }
 
   mount(el) {
-    document.querySelectorAll('.lookpop, .refpop, .popmenu').forEach(e => e.remove());
+    document.querySelectorAll('.lookpop, .refpop, .popmenu, .recentbar, .tablepick').forEach(e => e.remove());
+    if (this.textScreen && this.textScreen.cur && el !== this.textScreen.root) this.textScreen.commit();
+    if (this.textScreen && el !== this.textScreen.root) this.textScreen.hideSel();
     [...this.root.children].forEach(c => { if (c !== el) c.remove(); });
     if (!el.isConnected) this.root.appendChild(el);
   }
@@ -103,6 +114,13 @@ class App {
   async openDoc(id, at) {
     const doc = await S.getDoc(id);
     if (!doc) { toast('Documento não encontrado.'); return; }
+    if (doc.kind === 'text') {
+      if (this.textScreen.root.isConnected && this.textScreen.doc) this.textScreen.savePos();
+      this.mount(this.textScreen.root);
+      await this.textScreen.open(doc, at);
+      history.pushState({ screen: 'text', id }, '');
+      return;
+    }
     this.mount(this.reader.root);
     try { await this.reader.open(doc, at); }
     catch (e) { console.error(e); toast('Não foi possível abrir o PDF: ' + e.message, 5000); this.showLibrary(); return; }
@@ -113,7 +131,7 @@ class App {
 
   onPop() {
     // botão "voltar" do Android: do leitor/Digest para a biblioteca
-    if (this.reader.root.isConnected || this.digestScreen.root.isConnected) { this.mount(this.library.root); this.library.render(); }
+    if (this.reader.root.isConnected || this.digestScreen.root.isConnected || this.textScreen.root.isConnected) { this.mount(this.library.root); this.library.render(); }
   }
 
   openSettings(tab) { return openSettings(tab); }
@@ -139,7 +157,7 @@ class App {
 
   // texto de todas as páginas, para a busca geral (roda aos poucos, em segundo plano)
   async indexDoc(doc) {
-    if (!doc || doc.kind === 'notebook' || await S.getTexts(doc.id)) return;
+    if (!doc || doc.kind === 'notebook' || doc.kind === 'text' || await S.getTexts(doc.id)) return;
     try {
       const hd = await openPdf(doc);
       const pages = [];
@@ -154,7 +172,19 @@ class App {
   }
 
   async refreshLinkIndex() {
-    this.linkIndex = (await S.allAnnots()).filter(a => a.kind === 'link');
+    const out = (await S.allAnnots()).filter(a => a.kind === 'link');
+    // links escritos nos textos (leitor://documento/página) também contam como "links de volta"
+    for (const d of (await S.allDocs()).filter(x => x.kind === 'text')) {
+      const md = d.md || ''; let key = 'top'; let k = 0;
+      const re = /^#{1,6}\s+(.+)$|\[([^\]]*)\]\(leitor:\/\/([\w-]+)\/([\w-]*)(?:\?y=(\d+))?\)/gm;
+      let m;
+      const used = {};
+      while ((m = re.exec(md))) {
+        if (m[1] !== undefined) { const t = m[1].replace(/[*_`=$]/g, '').trim(); let id = 'h-' + t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); if (used[id]) id += '-' + (++used[id]); else used[id] = 1; key = id; continue; }
+        out.push({ kind: 'link', id: 'tx-' + d.id + '-' + (k++), docId: d.id, pageKey: key, rects: [[0, 0, 0, 0]], text: m[2], target: { type: 'page', docId: m[3], pageKey: m[4] || 'top', y: +(m[5] || 0) } });
+      }
+    }
+    this.linkIndex = out;
   }
 
   async exportObsidianAll() {

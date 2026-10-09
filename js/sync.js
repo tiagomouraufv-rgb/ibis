@@ -194,7 +194,7 @@ async function localDocBundle(doc) {
 }
 async function neededFiles() {
   const ids = new Set();
-  for (const d of await db.all('docs')) if (d.fileId) ids.add(d.fileId);
+  for (const d of await db.all('docs')) { if (d.fileId) ids.add(d.fileId); if (d.md) String(d.md).replace(/\]\((?:img|audio):([\w-]+)\)/g, (m, id) => { ids.add(id); return m; }); }
   for (const a of await db.all('annots')) { if (a.audioId) ids.add(a.audioId); if (a.fileId) ids.add(a.fileId); }
   for (const r of await db.all('recordings')) if (r.fileId) ids.add(r.fileId);
   for (const it of (await S.digest()).items) { if (it.audio) ids.add(it.audio); for (const n of it.images || []) ids.add(String(n).split('.')[0]); }

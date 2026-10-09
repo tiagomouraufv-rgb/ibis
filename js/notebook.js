@@ -4,6 +4,7 @@ import { db } from './db.js';
 import { h, clear, btn, icon, toast, uid, safeName, popMenu } from './util.js';
 import { renderMarkdown, numberAll, markdownForObsidian, toggleTask } from './md.js';
 import { strokePath, strokeWidth } from './viewer.js';
+import { MdEditBase, inMathAt } from './mdedit.js';
 
 export const TEMPLATES = [['blank', 'Em branco'], ['lined', 'Pautada'], ['grid', 'Quadriculada'], ['dots', 'Pontilhada'], ['cornell', 'Cornell']];
 const A4 = { w: 595.28, h: 841.89 };
@@ -203,7 +204,8 @@ export async function storeImage(blob) {
   let w = img.naturalWidth, hh = img.naturalHeight;
   let out = blob;
   const MAX = 2400;
-  if (Math.max(w, hh) > MAX || !/png|jpe?g|gif|webp/.test(blob.type)) {
+  // GIF fica como está (para continuar animado)
+  if (blob.type !== 'image/gif' && (Math.max(w, hh) > MAX || !/png|jpe?g|gif|webp/.test(blob.type))) {
     const k = Math.min(1, MAX / Math.max(w, hh));
     const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(hh * k);
     c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
@@ -249,8 +251,8 @@ export function renderBoxHtml(a, num) {
 }
 
 // Editor de texto dentro da página (Markdown + LaTeX), com barra de formatação
-export class TextEditor {
-  constructor(reader) { this.reader = reader; this.cur = null; this._bar = null; }
+export class TextEditor extends MdEditBase {
+  constructor(reader) { super(); this.reader = reader; this.cur = null; this._bar = null; this.idleHint = 'Toque na página (ferramenta Texto) para criar ou editar uma caixa.'; }
 
   get active() { return !!this.cur; }
   // barra de formatação: fica no topo da tela, ao lado do título, enquanto a ferramenta Texto está ativa
@@ -302,35 +304,29 @@ export class TextEditor {
   }
 
   toolbar() {
-    const b = (label, title, fn, cls = '') => h('button.fmt' + cls, { type: 'button', title, 'aria-label': title, onpointerdown: e => e.preventDefault(), onclick: e => {
-      if (!this.cur && !/toggle/.test(cls)) { toast('Toque na página (ferramenta Texto) para criar ou editar uma caixa.'); return; }
-      fn(e);
-    } }, label);
+    const b = (...a) => this.btn(...a);
     return h('div.fmtbar', { role: 'toolbar', 'aria-label': 'Formatação' },
       b('½', 'Caixa com metade da largura da página', () => this.setWidth('half')),
       b('↔', 'Caixa com a largura toda da página', () => this.setWidth('full')),
       h('span.fsep'),
-      b('H1', 'Título 1', () => this.linePrefix('# ')),
-      b('H2', 'Título 2', () => this.linePrefix('## ')),
-      b('H3', 'Título 3', () => this.linePrefix('### ')),
-      h('span.fsep'),
-      b('B', 'Negrito (Ctrl+B)', () => this.wrapSel('**', '**'), '.bold'),
-      b('I', 'Itálico (Ctrl+I)', () => this.wrapSel('*', '*'), '.ital'),
-      b('Realce', 'Realce ==texto==', () => this.wrapSel('==', '==')),
-      h('span.fsep'),
-      b('• Lista', 'Lista', () => this.linePrefix('- ')),
-      b('☐ Tarefa', 'Lista de tarefas', () => this.linePrefix('- [ ] ')),
-      b('❝', 'Citação', () => this.linePrefix('> ')),
-      b('</>', 'Código', () => this.wrapSel('`', '`')),
-      h('span.fsep'),
-      b('$x$', 'Equação no texto', () => this.wrapSel('$', '$')),
-      b('$$', 'Equação destacada', () => this.block('$$\n', '\n$$')),
-      b('(n)', 'Equação numerada (\\eqn)', () => this.block('$$\n', '\n\\eqn\n$$')),
-      b('ref', 'Citar equação numerada (\\eqref)', e => this.refMenu(e)),
+      ...this.commonButtons(),
       h('span.fsep'),
       b('Σ', 'Mostrar/esconder os símbolos de matemática', () => this.reader.toggleMathPal && this.reader.toggleMathPal(), '.toggle'),
       b('Prévia', 'Mostrar como fica enquanto digita', () => this.togglePrev()),
       b('Concluir', 'Concluir edição', () => this.close(), '.done'));
+  }
+
+  // fontes para numerar/citar equações: todas as caixas do caderno, em ordem de leitura
+  async sources() {
+    const { v, a, ta } = this.cur;
+    let anns = (await S.annots(v.doc.id)).filter(x => x.kind === 'tbox');
+    if (!anns.some(x => x.id === a.id)) anns = anns.concat([a]);
+    return readingOrder(v.doc, anns).map(x => ({ id: x.id, md: x.id === a.id ? ta.value : (x.md || '') }));
+  }
+  isCurrent(id) { return this.cur && this.cur.a.id === id; }
+  async setSource(id, md) {
+    const x = (await S.annots(this.cur.v.doc.id)).find(q => q.id === id);
+    if (x) { x.md = md; await S.putAnnot(x); }
   }
 
   // largura da caixa: metade ou página inteira (margens de 36 pt)
@@ -365,56 +361,6 @@ export class TextEditor {
     t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
   }
 
-  // símbolo do painel de matemática: '@' marca onde fica o cursor; fora de uma equação, entra entre $…$
-  insertMath(code) {
-    if (!this.cur) { toast('Toque numa caixa de texto (ferramenta Texto) para inserir o símbolo.'); return; }
-    const ta = this.cur.ta; const s = ta.selectionStart, e = ta.selectionEnd;
-    let t = code;
-    const sel = ta.value.slice(s, e);
-    if (sel && t.includes('@')) t = t.replace('@', sel + '@');
-    if (!t.includes('@') && /\\[A-Za-z]+$/.test(t)) t += ' ';
-    if (!inMathAt(ta.value, s)) t = t.includes('@') ? '$' + t + '$' : '$' + t.trimEnd() + '$@';
-    const caret = t.indexOf('@');
-    t = t.replace('@', '');
-    ta.setRangeText(t, s, e, 'end');
-    if (caret >= 0) ta.setSelectionRange(s + caret, s + caret);
-    ta.dispatchEvent(new Event('input')); ta.focus();
-  }
-
-  wrapSel(a, z) {
-    const ta = this.cur.ta; const s = ta.selectionStart, e = ta.selectionEnd;
-    const t = ta.value.slice(s, e) || '';
-    ta.setRangeText(a + t + z, s, e, 'end');
-    if (!t) ta.setSelectionRange(s + a.length, s + a.length);
-    ta.dispatchEvent(new Event('input')); ta.focus();
-  }
-  insert(t) { const ta = this.cur.ta; ta.setRangeText(t, ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input')); ta.focus(); }
-  block(a, z) {
-    const ta = this.cur.ta; const s = ta.selectionStart, e = ta.selectionEnd;
-    const before = ta.value.slice(0, s);
-    const pre = before && !before.endsWith('\n') ? '\n' : '';
-    const t = ta.value.slice(s, e);
-    ta.setRangeText(pre + a + t + z + '\n', s, e, 'end');
-    const pos = s + pre.length + a.length + t.length;
-    ta.setSelectionRange(pos, pos);
-    ta.dispatchEvent(new Event('input')); ta.focus();
-  }
-  linePrefix(p) {
-    const ta = this.cur.ta; const s = ta.selectionStart;
-    const ls = ta.value.lastIndexOf('\n', s - 1) + 1;
-    const line = ta.value.slice(ls).split('\n')[0];
-    if (line.startsWith(p)) ta.setRangeText('', ls, ls + p.length, 'end');
-    else ta.setRangeText(p, ls, ls, 'end');
-    ta.dispatchEvent(new Event('input')); ta.focus();
-  }
-  async refMenu(e) {
-    const { v } = this.cur;
-    const anns = await S.annots(v.doc.id);
-    const labels = Object.keys(numbering(v.doc, anns).labels);
-    const r = e.currentTarget.getBoundingClientRect();
-    if (!labels.length) { toast('Nenhuma equação com nome. Escreva \\label{nome} dentro de uma equação numerada.', 4500); return; }
-    popMenu(r.left, r.bottom + 4, labels.map(l => ({ label: l, onclick: () => this.insert('\\eqref{' + l + '}') })));
-  }
   togglePrev() { this.cur.showPrev = !this.cur.showPrev; this.cur.prev.style.display = this.cur.showPrev ? 'block' : 'none'; if (this.cur.showPrev) this.updatePrev(); }
   async updatePrev() {
     const { v, a, ta, prev } = this.cur;
@@ -438,16 +384,7 @@ export class TextEditor {
   }
 }
 
-// o cursor está dentro de uma equação ($…$ ou $$…$$)?
-export function inMathAt(text, pos) {
-  const before = text.slice(0, pos).replace(/\\\$/g, '');
-  const dd = (before.match(/\$\$/g) || []).length;
-  if (dd % 2 === 1) return true;
-  const last = before.lastIndexOf('$$');
-  const rest = (last >= 0 ? before.slice(last + 2) : before);
-  const para = rest.split(/\n\s*\n/).pop();
-  return ((para.match(/\$/g) || []).length % 2) === 1;
-}
+export { inMathAt };
 
 export function onTaskClick(a, idx) { a.md = toggleTask(a.md || '', idx); return S.putAnnot(a); }
 

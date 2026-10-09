@@ -91,6 +91,9 @@ const P = {
   image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/>',
   crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
   notebook: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v18M12 8h4M12 12h4"/>',
+  video: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.2l5 2.8-5 2.8z"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/>',
+  callout: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/>',
   sync: '<path d="M20 12a8 8 0 0 1-14.3 4.9M4 12A8 8 0 0 1 18.3 7.1"/><path d="M18.5 3v4.3h-4.3M5.5 21v-4.3h4.3"/>',
   swap: '<path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/>',
   sigma: '<path d="M18 5H6l6 7-6 7h12"/>',
@@ -276,3 +279,26 @@ export const CATS = [
 export function catInfo(id) { return CATS.find(c => c.id === (id || '')) || CATS[0]; }
 
 export const INK_COLORS = ['#16191D', '#1D5A8A', '#B4232C', '#2F7D45', '#8A4FBF'];
+
+// dois dedos deslizando na horizontal sobre o elemento: onLeft / onRight
+export function bindTwoFingerSwipe(el, onLeft, onRight) {
+  let st = null;
+  const pos = t => [...t].map(x => ({ x: x.clientX, y: x.clientY }));
+  const dist = p => Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+  el.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) st = { p0: pos(e.touches), p1: pos(e.touches), t: Date.now() };
+    else if (e.touches.length > 2) st = null;
+  }, { passive: true });
+  el.addEventListener('touchmove', e => { if (st && e.touches.length === 2) st.p1 = pos(e.touches); }, { passive: true });
+  el.addEventListener('touchend', e => {
+    if (!st || (e.touches.length > 0 && e.touches.length !== 1)) return;
+    const s0 = st; st = null;
+    const dx = [0, 1].map(i => s0.p1[i].x - s0.p0[i].x), dy = [0, 1].map(i => s0.p1[i].y - s0.p0[i].y);
+    const ax = (dx[0] + dx[1]) / 2, ay = (dy[0] + dy[1]) / 2;
+    const same = Math.sign(dx[0]) === Math.sign(dx[1]);
+    const pinch = Math.abs(dist(s0.p1) - dist(s0.p0)) / Math.max(1, dist(s0.p0));
+    if (!same || Math.abs(ax) < 120 || Math.abs(ay) > Math.abs(ax) * 0.6 || pinch > 0.3 || Date.now() - s0.t > 900) return;
+    if (ax < 0) onLeft(); else onRight();
+  }, { passive: true });
+  el.addEventListener('touchcancel', () => { st = null; }, { passive: true });
+}

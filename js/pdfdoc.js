@@ -65,6 +65,12 @@ export function pageList(doc, hd) {
 export function pageLabel(key, doc) {
   if (!key) return '';
   if (key[0] === 'p') return 'p. ' + key.slice(1);
+  if (doc && doc.kind === 'text') {
+    if (key === 'top' || !key) return 'início';
+    const m = String(doc.md || '').match(/^#{1,6}\s+.+$/gm) || [];
+    for (const line of m) { const t = line.replace(/^#+\s+/, '').replace(/[*_`=$]/g, '').trim(); if (slug(t) === key || key.startsWith(slug(t) + '-')) return '§ ' + t; }
+    return 'seção';
+  }
   if (key[0] === 'n') {
     if (doc && doc.pages) { let n = 0; for (const p of doc.pages) { if (p.tpl !== 'cover') n++; if ('n' + p.id === key) return p.tpl === 'cover' ? 'capa' : 'p. ' + n; } }
     return 'página do caderno';
@@ -148,3 +154,5 @@ export async function embeddedData(hd) {
   } catch (e) {}
   return null;
 }
+
+function slug(t) { return 'h-' + String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); }
