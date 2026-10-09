@@ -210,10 +210,16 @@ export class MdEditBase {
       cells.push({ el, r: i, c: j });
       grid.appendChild(el);
     }
-    const box = h('div.tablepick.popmenu', info, grid);
+    const ri = h('input', { type: 'number', min: 1, max: 60, value: 3, 'aria-label': 'Linhas' });
+    const ci = h('input', { type: 'number', min: 1, max: 20, value: 3, 'aria-label': 'Colunas' });
+    const typed = h('div.tptyped', h('label', 'Linhas ', ri), h('label', 'Colunas ', ci),
+      h('button.pbtn.small', { type: 'button', onpointerdown: ev => ev.preventDefault(), onclick: () => { const rr = Math.max(1, Math.min(60, +ri.value || 1)), cc = Math.max(1, Math.min(20, +ci.value || 1)); box.remove(); this.insertTable(rr, cc); } }, 'Inserir'));
+    const box = h('div.tablepick.popmenu', info, grid, typed);
     document.body.appendChild(box);
-    box.style.left = Math.max(8, Math.min(innerWidth - 260, r.left)) + 'px';
-    box.style.top = (r.bottom + 4) + 'px';
+    const bh = box.getBoundingClientRect().height, bw = box.getBoundingClientRect().width;
+    const side = r.left < 90;   // botão da barra lateral: abre ao lado
+    box.style.left = Math.max(8, Math.min(innerWidth - bw - 8, side ? r.right + 6 : r.left)) + 'px';
+    box.style.top = Math.max(8, Math.min(innerHeight - bh - 8, side ? r.top : r.bottom + 4)) + 'px';
     setTimeout(() => {
       const off = ev => { if (!box.contains(ev.target)) { box.remove(); document.removeEventListener('pointerdown', off, true); } };
       document.addEventListener('pointerdown', off, true);

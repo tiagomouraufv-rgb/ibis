@@ -11,6 +11,7 @@ import { plainText, headings } from './md.js';
 import { openNotebookExport } from './dialogs.js';
 import * as SY from './sync.js';
 import * as TX from './textdoc.js';
+import { openExternal } from './platform.js';
 
 export class Library {
   constructor(app) {
@@ -20,6 +21,7 @@ export class Library {
     this.q = '';
     S.on('docs', () => { if (this.root.isConnected && !this.busy) this.renderMain(); });
     S.on('projects', () => { if (this.root.isConnected) this.render(); });
+    S.on('readLater', () => { if (this.root.isConnected && (this.view === 'lerdepois' || this.ptab === 'ler')) this.renderMain(); });
     S.on('sync', () => this.paintSync());
   }
 
@@ -56,6 +58,7 @@ export class Library {
       item('todos', 'library', 'Biblioteca'),
       h('button.navitem', { type: 'button', onclick: () => this.app.showDigest() }, icon('digest', 20), h('span.grow', 'Digest')),
       item('gravacoes', 'mic', 'Gravações'),
+      item('lerdepois', 'bookmark', 'Ler depois'),
       h('div.navhead', h('span', 'PROJETOS'), btn('plus', '', async () => { const name = await promptBox('Novo projeto', 'Nome do projeto', '', 'Criar'); if (name && name.trim()) { const p = await S.saveProject({ name: name.trim() }); this.view = 'projeto:' + p.id; this.render(); } }, { iconOnly: true, title: 'Novo projeto', cls: 'ibtn small' })));
     for (const p of await S.projects()) n.appendChild(item('projeto:' + p.id, 'folder', p.name));
     this.syncBtn = h('button.navitem.syncitem', { type: 'button', onclick: () => this.syncClick() });
@@ -69,10 +72,12 @@ export class Library {
     const search = h('input', { type: 'search', placeholder: 'Buscar em tudo: títulos, texto dos PDFs, notas, Digest…', value: this.q });
     const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf', multiple: true, style: { display: 'none' } });
     fileIn.addEventListener('change', () => this.app.importFiles([...fileIn.files], this.view.startsWith('projeto:') ? this.view.slice(8) : null));
-    m.append(h('header.ltop', h('h1', await this.title()), h('div.grow'), h('div.searchbox', icon('search', 18), search),
-      h('button.sbtn', { type: 'button', onclick: () => this.newText() }, icon('text', 18), 'Novo texto'),
-      h('button.sbtn', { type: 'button', onclick: () => this.newNotebook() }, icon('notebook', 18), 'Novo caderno'),
-      h('button.pbtn', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), 'Abrir PDF'), fileIn));
+    m.append(h('header.ltop', h('h1', await this.title()), h('div.grow'),
+      h('div.newgroup', { role: 'group', 'aria-label': 'Novo' },
+        h('button.ng', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), h('span', 'Abrir PDF')),
+        h('button.ng', { type: 'button', onclick: () => this.newText() }, icon('text', 18), h('span', 'Novo texto')),
+        h('button.ng', { type: 'button', onclick: () => this.newNotebook() }, icon('notebook', 18), h('span', 'Novo caderno'))), fileIn),
+      h('div.lsearch', h('div.searchbox', icon('search', 18), search)));
     const body = h('div.lbody');
     m.appendChild(body);
     search.addEventListener('input', debounce(() => { this.q = search.value; this.renderBody(body); }, 350));
@@ -81,6 +86,7 @@ export class Library {
 
   async title() {
     if (this.view === 'gravacoes') return 'Gravações';
+    if (this.view === 'lerdepois') return 'Ler depois';
     if (this.view.startsWith('projeto:')) { const p = (await S.projects()).find(x => x.id === this.view.slice(8)); return p ? p.name : 'Projeto'; }
     return 'Biblioteca';
   }
@@ -89,6 +95,12 @@ export class Library {
     clear(body);
     if (this.q.trim().length >= 2) return this.renderSearch(body, this.q.trim());
     if (this.view === 'gravacoes') return this.renderRecordings(body);
+    if (this.view === 'lerdepois') {
+      const all = (await S.readLater()).slice().sort((a, b) => a.added - b.added);
+      body.appendChild(h('p.muted', 'Artigos citados que você marcou com “Ler depois” (toque numa citação de um PDF para ver o artigo). Os de PDFs que estão em projetos aparecem também na aba “Para ler” do projeto.'));
+      this.renderReadLater(body, all, true);
+      return;
+    }
     let docs = await S.allDocs();
     if (this.view.startsWith('projeto:')) {
       const pid = this.view.slice(8);
@@ -103,8 +115,23 @@ export class Library {
         h('button.dbtn', { type: 'button', onclick: async () => { if (await confirmBox('Apagar projeto', 'Apagar o projeto “' + proj.name + '”? Os PDFs continuam na biblioteca.', 'Apagar', true)) { await S.deleteProject(pid); this.view = 'todos'; this.render(); } } }, 'Apagar projeto')));
       const dg = await S.digest();
       const ids = new Set(docs.map(d => d.id));
-      const items = dg.items.filter(it => ids.has(it.src.doc));
-      if (items.length) body.appendChild(h('p.muted', items.length + ' trecho(s) do Digest neste projeto. ', h('button.linkbtn', { type: 'button', onclick: () => this.app.showDigest() }, 'Abrir o Digest')));
+      const items = dgFilter(dg, {}, 'recentes').filter(it => ids.has(it.src.doc));
+      const rl = (await S.readLater()).filter(x => (x.projects || []).includes(pid)).sort((a, b) => a.added - b.added);
+      this.ptab = this.ptab || 'docs';
+      const tabs = [['docs', 'Documentos (' + docs.length + ')'], ['digest', 'Digest (' + items.length + ')'], ['ler', 'Para ler (' + rl.length + ')']];
+      body.appendChild(h('div.tabsrow.ptabs', { role: 'tablist' }, tabs.map(([id, l]) => h('button.tab', { type: 'button', role: 'tab', 'aria-selected': String(this.ptab === id), onclick: () => { this.ptab = id; this.renderBody(body); } }, l))));
+      if (this.ptab === 'digest') {
+        if (!items.length) body.appendChild(h('p.muted.pad', 'Nenhum trecho do Digest vem dos documentos deste projeto ainda.'));
+        const list = h('div.dlist.pdigest');
+        for (const it of items) list.appendChild(this.app.digestScreen.card(it));
+        body.appendChild(list);
+        return;
+      }
+      if (this.ptab === 'ler') {
+        if (!rl.length) body.appendChild(h('p.muted.pad', 'Nada aqui ainda. Num PDF deste projeto, toque numa citação (o número da referência) e use “Ler depois”.'));
+        else this.renderReadLater(body, rl, false);
+        return;
+      }
     }
     if (!docs.length) {
       body.appendChild(h('div.empty', h('p', this.view === 'todos' ? 'Nenhum PDF ainda.' : 'Nenhum PDF neste projeto.'),
@@ -157,6 +184,28 @@ export class Library {
     ]);
   }
 
+  // tabela "ler depois", na ordem em que foram marcados
+  renderReadLater(body, items, showProj) {
+    if (!items.length) { body.appendChild(h('p.muted.pad', 'Nenhum artigo marcado ainda.')); return; }
+    const tbl = h('table.rltab', h('thead', h('tr', h('th', '#'), h('th', 'Artigo'), h('th', 'Resumo'), h('th', 'Citado em'), h('th', ''))));
+    const tb = h('tbody');
+    items.forEach((it, i) => {
+      const au = (it.authors || []).length > 3 ? it.authors[0] + ' et al.' : (it.authors || []).join(', ');
+      tb.appendChild(h('tr' + (it.done ? '.done' : ''),
+        h('td.num', String(i + 1)),
+        h('td', h('div.rlt', it.title || it.ref || '(sem título)'), h('div.muted.small', [au, it.venue, it.year].filter(Boolean).join(' · ')), typeof it.cites === 'number' ? h('div.small.refcites', 'citado ' + it.cites.toLocaleString('pt-BR') + ' vezes') : null),
+        h('td', it.abstract ? h('details', h('summary', 'Ver resumo'), h('div.rlabs', it.abstract)) : h('span.muted.small', '—')),
+        h('td', it.fromDocId ? h('button.linkbtn', { type: 'button', onclick: () => this.app.openAt(it.fromDocId, it.fromPage ? 'p' + it.fromPage : '') }, (it.fromTitle || 'documento') + (it.fromPage ? ', p. ' + it.fromPage : '')) : h('span.muted', '—')),
+        h('td.acts',
+          it.url ? h('button.ibtn.small', { type: 'button', title: 'Abrir o artigo', onclick: () => openExternal(it.url) }, icon('fwd', 16)) : null,
+          h('button.ibtn.small', { type: 'button', title: it.done ? 'Marcar como não lido' : 'Marcar como lido', onclick: async () => { it.done = !it.done; await S.saveReadLaterItem(it); this.renderMain(); } }, icon('check', 16)),
+          h('button.ibtn.small', { type: 'button', title: 'Tirar da lista', onclick: async () => { await S.delReadLater(it.id); this.renderMain(); } }, icon('trash', 16)))));
+    });
+    tbl.appendChild(tb);
+    body.appendChild(h('div.rlwrap', tbl));
+    void showProj;
+  }
+
   async newText() {
     const name = await promptBox('Novo texto', 'Nome', 'Texto ' + new Date().toLocaleDateString('pt-BR'), 'Criar');
     if (name === null) return;
@@ -200,6 +249,7 @@ export class Library {
       d.kind ? null : { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
       d.kind === 'notebook' ? { icon: 'notebook', label: 'Capa…', onclick: () => this.app.reader.coverMenu(d, x - 220, y, () => this.renderMain()) } : null,
       { icon: 'ai', label: 'Resumo das anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
+      d.kind ? null : { icon: 'ai', label: 'Resumo por capítulo/seção (IA)', onclick: async () => { const { openSectionBriefing } = await import('./dialogs.js'); openSectionBriefing(d); } },
       { icon: 'note', label: 'Renomear', onclick: async () => { const n = await promptBox('Renomear', 'Nome', d.name, 'Salvar'); if (n && n.trim()) { d.name = n.trim(); await S.saveDoc(d); } } },
       '-',
       { icon: 'trash', label: 'Apagar da biblioteca', danger: true, onclick: async () => { if (await confirmBox('Apagar PDF', 'Apagar “' + S.docTitle(d) + '” e todas as anotações dele? Com a sincronização ligada, ele some também dos outros aparelhos. Cópias que você salvou fora do app não são afetadas.', 'Apagar', true)) await S.deleteDoc(d.id); } },

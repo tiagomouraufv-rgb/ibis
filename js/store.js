@@ -38,7 +38,7 @@ async function tomb(ids) {
 }
 async function untomb(id) { const t = await tombs(); if (t[id]) { delete t[id]; await db.kvSet('tombs', t); } }
 export function resetAnnCache(docId) { if (docId) annCache.delete(docId); else annCache.clear(); }
-export function resetCaches() { annCache.clear(); digestCache = null; settingsCache = null; tombCache = null; }
+export function resetCaches() { annCache.clear(); digestCache = null; settingsCache = null; tombCache = null; rlCache = null; }
 // identificador curto deste aparelho (evita que dois aparelhos criem trechos do Digest com o mesmo número)
 export async function deviceId() {
   let d = await db.kvGet('deviceId', '');
@@ -192,6 +192,7 @@ export async function deleteProject(id) {
 
 // ---------- configurações ----------
 const DEFAULTS = {
+  aiProvider: 'gemini', claudeKey: '', claudeModel: 'claude-sonnet-5-5', refPopup: true, cropInSplit: true,
   geminiKey: '', geminiModel: 'gemini-3.8-flash', language: 'português do Brasil',
   researchContext: 'Pesquisador em fotônica e pinças ópticas (UFV): aprisionamento óptico de nanopartículas de semicondutores orgânicos (MEH-PPV/Pdots) e de micropartículas semicondutoras (Ge, Si); modelagem teórica com osciladores de Lorentz no Mathcad Prime; orienta alunos de graduação.',
   translateTo: 'pt', obsidianVault: '', obsidianFolder: 'Leituras', theme: 'auto', pdfMode: 'normal',
@@ -232,3 +233,29 @@ export async function putAnnotsGroup(arr) {
   redoStack.length = 0;
   emit('annots', { docId: arr[0].docId });
 }
+
+// ---------- "ler depois" (artigos citados que você quer ler) ----------
+let rlCache = null;
+export async function readLater() { if (!rlCache) rlCache = await db.kvGet('readLater', []); return rlCache; }
+export async function saveReadLaterItem(it) {
+  const l = await readLater();
+  if (!it.id) it.id = uid('rl');
+  if (!it.added) it.added = Date.now();
+  it.updated = Date.now();
+  const i = l.findIndex(x => x.id === it.id);
+  if (i >= 0) l[i] = it; else l.push(it);
+  await db.kvSet('readLater', l);
+  await untomb(it.id);
+  emit('readLater', l); dirty();
+  return it;
+}
+export async function delReadLater(id) {
+  const l = await readLater();
+  const i = l.findIndex(x => x.id === id);
+  if (i < 0) return;
+  l.splice(i, 1);
+  await db.kvSet('readLater', l);
+  await tomb([id]);
+  emit('readLater', l);
+}
+export async function setReadLaterAll(list) { rlCache = list; await db.kvSet('readLater', list); emit('readLater', list); }

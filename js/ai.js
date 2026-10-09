@@ -1,10 +1,66 @@
-// IA (Gemini, com a sua chave guardada só no aparelho), Google Tradutor, Claude e metadados por DOI.
+// IA (Gemini ou Claude, com a sua chave guardada só no aparelho), Google Tradutor e metadados por DOI.
 import { PROMPTS } from './prompts.js';
 import * as S from './store.js';
 import { copyText, toast } from './util.js';
 import { openExternal, shareText, isAndroidApp } from './platform.js';
 
 const FALLBACKS = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+
+// Modelos do Claude (API da Anthropic) e preços de referência em US$ por milhão de tokens [entrada, saída].
+// Valores conferidos em outubro de 2026; confira na página de preços de cada empresa.
+export const CLAUDE_MODELS = [
+  ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 — rápido e mais barato'],
+  ['claude-sonnet-5-5', 'Claude Sonnet 5.5 — equilibrado (recomendado)'],
+  ['claude-opus-5-5', 'Claude Opus 5.5 — o mais forte, mais caro'],
+];
+export function priceOf(model) {
+  const m = String(model || '');
+  if (/haiku-4-5/.test(m)) return [1, 5];
+  if (/sonnet-5-5/.test(m)) return [2, 10];
+  if (/opus-5-5/.test(m)) return [4, 20];
+  if (/flash-lite/.test(m)) return [0.3, 2.5];
+  if (/flash/.test(m)) return [0.75, 3.75];
+  if (/gemini.*pro/.test(m)) return [2, 12];
+  return null;
+}
+export function costOf(model, tin, tout) { const p = priceOf(model); return p ? (tin * p[0] + tout * p[1]) / 1e6 : null; }
+export function fmtUsd(v) { return v == null ? '' : v < 0.01 ? 'menos de US$ 0,01' : 'US$ ' + v.toFixed(v < 0.1 ? 3 : 2).replace('.', ','); }
+
+async function callClaude(system, user, maxTokens = 4096, signal) {
+  const st = await S.settings();
+  if (!st.claudeKey) throw new Error('Configure a chave da API do Claude em Configurações → IA (ela fica guardada só neste aparelho).');
+  const model = st.claudeModel || 'claude-sonnet-5-5';
+  let r;
+  try {
+    r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': st.claudeKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new Error('Sem conexão com o Claude. Verifique a internet.');
+  }
+  let j = null; try { j = await r.json(); } catch (e) {}
+  const msg = j && j.error && j.error.message ? j.error.message : '';
+  if (r.status === 401) throw new Error('Chave do Claude recusada. Confira a chave em Configurações → IA.');
+  if (r.status === 404) throw new Error('Modelo do Claude indisponível (' + model + '). Escolha outro em Configurações → IA.');
+  if (r.status === 429) throw new Error('Limite de uso do Claude atingido. Tente daqui a pouco.');
+  if (r.status === 529 || r.status === 503) throw new Error('O Claude está sobrecarregado agora. Tente de novo em instantes.');
+  if (r.status === 400 && /credit|balance|billing/i.test(msg)) throw new Error('Sem crédito na conta da API do Claude. Adicione crédito em console.anthropic.com (Billing).');
+  if (!r.ok) throw new Error('Erro do Claude (HTTP ' + r.status + ')' + (msg ? ': ' + msg : ''));
+  const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n').trim();
+  if (!text) throw new Error('Resposta vazia do Claude.');
+  const tin = (j.usage && j.usage.input_tokens) || 0, tout = (j.usage && j.usage.output_tokens) || 0;
+  return { text, truncated: j.stop_reason === 'max_tokens', model, provider: 'Claude', tin, tout, cost: costOf(model, tin, tout) };
+}
+
+// chama a IA escolhida em Configurações
+export async function callAI(system, user, maxTokens, signal) {
+  const st = await S.settings();
+  return st.aiProvider === 'claude' ? callClaude(system, user, maxTokens, signal) : callGemini(system, user, maxTokens, signal);
+}
+export async function aiName() { const st = await S.settings(); return st.aiProvider === 'claude' ? 'Claude' : 'Gemini'; }
 
 function fill(t, vars) { return String(t).replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] !== undefined ? vars[k] : ''); }
 
@@ -35,7 +91,9 @@ async function callGemini(system, user, maxTokens = 4096, signal) {
     const text = ((c.content && c.content.parts) || []).filter(p => typeof p.text === 'string' && !p.thought).map(p => p.text).join('\n').trim();
     if (!text) throw new Error('Resposta vazia do Gemini.');
     if (model !== st.geminiModel) S.setSettings({ geminiModel: model });
-    return { text, truncated: c.finishReason === 'MAX_TOKENS', model };
+    const um = j.usageMetadata || {};
+    const tin = um.promptTokenCount || 0, tout = (um.candidatesTokenCount || 0) + (um.thoughtsTokenCount || 0);
+    return { text, truncated: c.finishReason === 'MAX_TOKENS', model, provider: 'Gemini', tin, tout, cost: costOf(model, tin, tout) };
   }
   throw lastErr || new Error('Nenhum modelo do Gemini disponível.');
 }
@@ -66,14 +124,26 @@ export async function runAction(action, selection, docInfo, question, signal, ct
   const vars = { language: language || st.language, document_info: docInfo ? 'Documento: ' + docInfo : '', selection: selection.slice(0, 8000), question: question || '' };
   let system = fill(PROMPTS.system_common, vars) + '\n\n' + fill(a.system_extra, vars);
   if (ctx && action !== 'translate') system += '\n\nContexto do leitor (use para escolher exemplos e o que destacar, sem inventar nada): ' + ctx;
-  return callGemini(system, fill(a.user_template, vars), 2500, signal);
+  return callAI(system, fill(a.user_template, vars), 2500, signal);
 }
 
 // Resumo das anotações de um documento ou projeto (não envia o PDF inteiro, só o que você marcou)
 export async function briefing(title, material, signal, ctx) {
   const st = await S.settings();
   const vars = { language: st.language, research_context: ctx || st.researchContext, title, material: material.slice(0, 60000) };
-  return callGemini(fill(PROMPTS.briefing.system, vars), fill(PROMPTS.briefing.user_template, vars), 6000, signal);
+  return callAI(fill(PROMPTS.briefing.system, vars), fill(PROMPTS.briefing.user_template, vars), 6000, signal);
+}
+
+// Resumo de uma seção/capítulo a partir do texto do PDF (para livros e artigos longos)
+export async function sectionSummary(docTitle, section, text, signal, ctx) {
+  const st = await S.settings();
+  const system = 'Você prepara resumos de leitura científica para um pesquisador de Física. Responda em ' + st.language + '.\n' +
+    'Você recebe o texto extraído do PDF (pode ter hifenização quebrada e símbolos corrompidos; reconstrua com cuidado e diga quando supôs algo) de UMA seção ou capítulo.\n' +
+    'Regras: afirme só o que está no texto; não invente valores, referências nem resultados. Use Markdown leve (### títulos, listas com -, **negrito**) e equações em LaTeX ($...$ ou $$...$$). Seja denso (no máximo ~350 palavras).\n' +
+    'Estrutura: ### Ideia central (1–2 frases)\n### Pontos principais (lista)\n### Equações e grandezas importantes (se houver)\n### Para lembrar (1–3 itens)' +
+    (ctx ? '\nContexto do leitor (use para destacar o que interessa, sem inventar): ' + ctx : '');
+  const user = 'Documento: ' + docTitle + '\nSeção: ' + section + '\n\nTexto da seção:\n<<<\n' + text.slice(0, 90000) + '\n>>>';
+  return callAI(system, user, 1800, signal);
 }
 
 // Google Tradutor no navegador (até ~5000 caracteres)

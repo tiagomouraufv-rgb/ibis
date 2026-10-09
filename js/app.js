@@ -1,7 +1,7 @@
 // Ponto de entrada: telas, importação, indexação para a busca, índice de links.
 import * as S from './store.js';
 import { persistStorage } from './db.js';
-import { h, toast } from './util.js';
+import { h, toast, modal } from './util.js';
 import { Library } from './library.js';
 import { Reader } from './reader.js';
 import { DigestScreen } from './digestui.js';
@@ -14,15 +14,22 @@ import { isAndroidApp, b64ToBytes } from './platform.js';
 import { startAutoSync } from './sync.js';
 import { TextScreen } from './textdoc.js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 
 class App {
   constructor() {
     this.root = document.getElementById('app');
     this.library = new Library(this);
-    this.reader = new Reader(this);
+    this.readers = [new Reader(this, 0), new Reader(this, 1)];
+    this.reader = this.readers[0];
     this.digestScreen = new DigestScreen(this);
-    this.textScreen = new TextScreen(this);
+    this.texts = [new TextScreen(this, 0), new TextScreen(this, 1)];
+    this.textScreen = this.texts[0];
+    // tela dividida: dois lados, cada um com um PDF, caderno ou texto
+    this.split = false; this.side = 0;
+    this.slots = [h('div.sideslot'), h('div.sideslot')];
+    this.splitEl = h('div.splitroot', this.slots[0], h('div.splitbar'), this.slots[1]);
+    this.slots.forEach((sl, i) => sl.addEventListener('pointerdown', () => this.setSide(i), true));
     this.linkIndex = [];
   }
 
@@ -68,6 +75,11 @@ class App {
   androidBack() {
     const pop = document.querySelector('.popmenu, .refpop, .lookpop, .recentbar, .tablepick');
     if (pop) { pop.remove(); return true; }
+    if (this.split) {
+      const mb0 = [...document.querySelectorAll('.modal-back')].pop();
+      if (mb0) { const c = mb0.querySelector('.modal-head .ibtn'); if (c) c.click(); else mb0.remove(); return true; }
+      this.exitSplit(this.side); return true;
+    }
     const mb = [...document.querySelectorAll('.modal-back')].pop();
     if (mb) { const c = mb.querySelector('.modal-head .ibtn'); if (c) c.click(); else mb.remove(); return true; }
     if (this.reader.root.isConnected) {
@@ -91,7 +103,89 @@ class App {
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   }
 
+  // ---------- tela dividida ----------
+  setSide(i) {
+    if (this.side === i) return;
+    this.side = i;
+    this.slots.forEach((sl, k) => sl.classList.toggle('activeside', k === i));
+  }
+  screenOn(side) {
+    if (!this.split) return [...this.readers, ...this.texts].find(x => x.root.isConnected) || null;
+    const slot = this.slots[side];
+    return [...this.readers, ...this.texts].find(x => x.root.parentNode === slot) || null;
+  }
+  docOnSide(side) { const sc = this.screenOn(side); return sc && sc.doc ? sc.doc.id : ''; }
+  posOf(sc) {
+    if (!sc || !sc.doc) return null;
+    if (sc.active && sc.active.currentKey) return { key: sc.active.currentKey(), y: sc.active.currentOffset() };
+    return null;
+  }
+  leaving(el) {
+    const t = this.texts.find(x => x.root === el);
+    if (t) { if (t.cur) t.commit(); t.hideSel(); t.imgDeselect && t.imgDeselect(); t.savePos(); }
+  }
+  async chooseSplit(curDoc) {
+    const docs = await S.allDocs();
+    const rec = (await this.reader.recentDocs()).filter(d => !curDoc || d.id !== curDoc.id);
+    const rest = docs.filter(d => (!curDoc || d.id !== curDoc.id) && !rec.some(r => r.id === d.id));
+    const kind = d => d.kind === 'notebook' ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF';
+    const row = (d, at) => h('button.pickrow', { type: 'button', onclick: () => { m.close(); this.openSplit(d.id, at); } }, h('b', S.docTitle(d)), h('span.muted', kind(d)));
+    const list = h('div.picklist',
+      curDoc && curDoc.kind !== 'text' ? h('button.pickrow', { type: 'button', onclick: () => { m.close(); this.openSplit(curDoc.id, this.posOf(this.screenOn(0))); } }, h('b', 'Este mesmo documento'), h('span.muted', 'para ver duas partes ao mesmo tempo')) : null,
+      rec.length ? h('div.flabel', 'RECENTES') : null, rec.slice(0, 8).map(d => row(d)),
+      rest.length ? h('div.flabel', 'TODOS') : null, rest.map(d => row(d)));
+    const m = modal('Dividir a tela: o que abrir do outro lado?', list);
+  }
+  async openSplit(docId, at) {
+    const cur = this.screenOn(0);
+    if (!cur) return;
+    this.split = true;
+    this.readers.forEach(r => { r.cropManual = undefined; });
+    [...this.root.children].forEach(c => c.remove());
+    this.root.appendChild(this.splitEl);
+    this.slots[0].replaceChildren(cur.root);
+    this.slots[1].replaceChildren();
+    this.side = -1; this.setSide(1);
+    this.texts.forEach(t => t.mathPal.classList.remove('open'));
+    await this.openDoc(docId, at, 1);
+    const r0 = this.readers[0];
+    if (r0.root.parentNode === this.slots[0] && r0.active && r0.doc && r0.doc.kind !== 'notebook') r0.active.setCrop((await S.settings()).cropInSplit !== false);
+  }
+  async exitSplit(keep) {
+    if (!this.split) return;
+    const sc = this.screenOn(keep);
+    const docId = sc && sc.doc ? sc.doc.id : '';
+    const pos = this.posOf(sc);
+    this.slots.forEach(sl => [...sl.children].forEach(c => this.leaving(c)));
+    this.split = false;
+    this.slots.forEach(sl => sl.replaceChildren());
+    this.splitEl.remove();
+    this.side = 0;
+    this.readers.forEach(r => { r.cropManual = undefined; });
+    if (docId) await this.openDoc(docId, pos || undefined, 0);
+    else this.showLibrary();
+    const r0 = this.readers[0];
+    if (r0.root.isConnected && r0.active && r0.active.cropBox) r0.active.setCrop(false);
+  }
+  // link na tela dividida: abre do outro lado
+  async openInOther(side, target) {
+    const other = 1 - side;
+    const sc = this.screenOn(other);
+    if (sc && sc.doc && sc.doc.id === target.docId) {
+      if (sc.active && sc.active.goTo) { sc.active.goTo(target.pageKey, target.y || 0, { flash: true }); sc.onNav && sc.onNav(sc.active); }
+      else if (sc.scrollToKey) sc.scrollToKey(target.pageKey || 'top', true);
+      this.setSide(other);
+      return;
+    }
+    await this.openDoc(target.docId, { key: target.pageKey, y: target.y || 0 }, other);
+    this.setSide(other);
+  }
+
   mount(el) {
+    if (this.split) {
+      this.slots.forEach(sl => [...sl.children].forEach(c => this.leaving(c)));
+      this.split = false; this.slots.forEach(sl => sl.replaceChildren()); this.splitEl.remove(); this.side = 0;
+    }
     document.querySelectorAll('.lookpop, .refpop, .popmenu, .recentbar, .tablepick').forEach(e => e.remove());
     if (this.textScreen && this.textScreen.cur && el !== this.textScreen.root) this.textScreen.commit();
     if (this.textScreen && el !== this.textScreen.root) this.textScreen.hideSel();
@@ -111,25 +205,34 @@ class App {
     history.pushState({ screen: 'digest' }, '');
   }
 
-  async openDoc(id, at) {
+  async openDoc(id, at, side) {
     const doc = await S.getDoc(id);
     if (!doc) { toast('Documento não encontrado.'); return; }
-    if (doc.kind === 'text') {
-      if (this.textScreen.root.isConnected && this.textScreen.doc) this.textScreen.savePos();
-      this.mount(this.textScreen.root);
-      await this.textScreen.open(doc, at);
-      history.pushState({ screen: 'text', id }, '');
+    side = this.split ? (side === undefined || side === null ? this.side : side) : 0;
+    const isText = doc.kind === 'text';
+    const scr = isText ? this.texts[side] : this.readers[side];
+    if (this.split) {
+      const slot = this.slots[side];
+      for (const c of [...slot.children]) if (c !== scr.root) { this.leaving(c); c.remove(); }
+      if (scr.root.parentNode !== slot) slot.appendChild(scr.root);
+    } else {
+      if (isText && this.textScreen.root.isConnected && this.textScreen.doc) this.textScreen.savePos();
+      this.mount(scr.root);
+    }
+    if (isText) {
+      await scr.open(doc, at);
+      if (!this.split) history.pushState({ screen: 'text', id }, '');
       return;
     }
-    this.mount(this.reader.root);
-    try { await this.reader.open(doc, at); }
-    catch (e) { console.error(e); toast('Não foi possível abrir o PDF: ' + e.message, 5000); this.showLibrary(); return; }
-    history.pushState({ screen: 'reader', id }, '');
+    try { await scr.open(doc, at); }
+    catch (e) { console.error(e); toast('Não foi possível abrir o PDF: ' + e.message, 5000); if (!this.split) this.showLibrary(); return; }
+    if (!this.split) history.pushState({ screen: 'reader', id }, '');
   }
 
   openAt(docId, pageKey, y) { return this.openDoc(docId, { key: pageKey || 'p1', y: y || 0 }); }
 
   onPop() {
+    if (this.split) { this.exitSplit(this.side); return; }
     // botão "voltar" do Android: do leitor/Digest para a biblioteca
     if (this.reader.root.isConnected || this.digestScreen.root.isConnected || this.textScreen.root.isConnected) { this.mount(this.library.root); this.library.render(); }
   }

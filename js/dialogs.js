@@ -4,7 +4,8 @@ import { db } from './db.js';
 import { h, clear, btn, toast, modal, copyText, downloadBlob, shareFile, safeName, CATS, catInfo, confirmBox } from './util.js';
 import { exportPdf, annotatedName } from './export.js';
 import { vaultZip, sendNoteToObsidian, docMarkdown, noteFileName } from './obsidian.js';
-import { openPdf, pageText, pageLabel } from './pdfdoc.js';
+import { openPdf, pageText, pageLabel, outline, resolveDest } from './pdfdoc.js';
+import { renderMarkdown } from './md.js';
 import * as AI from './ai.js';
 import { zipSync, unzipSync, strToU8, strFromU8 } from '../vendor/fflate.js';
 import * as SY from './sync.js';
@@ -128,13 +129,18 @@ export async function openMetaDialog(doc) {
 // mostra resultado da IA com cancelar / copiar / salvar como nota
 export function showAiResult(title, run, opts = {}) {
   const ctrl = new AbortController();
-  const out = h('div.aiout', h('p.muted', 'Consultando o Gemini…'));
+  const out = h('div.aiout', h('p.muted', 'Consultando a IA…'));
+  AI.aiName().then(n => { if (!text && out.firstChild && out.firstChild.classList && out.firstChild.classList.contains('muted')) out.firstChild.textContent = 'Consultando o ' + n + '…'; });
   let text = '';
   const m = modal(title, out, [
     { label: 'Copiar', onclick: async () => { if (text) { await copyText(text); toast('Copiado.'); } } },
     opts.onSaveNote ? { label: 'Salvar como nota', primary: true, onclick: async c => { if (!text) return; c(); await opts.onSaveNote(text); } } : null,
   ].filter(Boolean), { wide: true, focus: false, onclose: () => ctrl.abort() });
-  run(ctrl.signal).then(r => { text = r.text; clear(out); out.appendChild(mdToNodes(r.text)); if (r.truncated) out.appendChild(h('p.muted', '(resposta cortada pelo limite de tamanho)')); })
+  run(ctrl.signal).then(r => {
+    text = r.text; clear(out); out.appendChild(mdToNodes(r.text));
+    if (r.truncated) out.appendChild(h('p.muted', '(resposta cortada pelo limite de tamanho)'));
+    if (r.model) out.appendChild(h('p.aicost', r.provider + ' · ' + r.model + (r.tin ? ' · ' + (r.tin + r.tout).toLocaleString('pt-BR') + ' tokens' : '') + (r.cost != null ? ' · custo aprox. ' + AI.fmtUsd(r.cost) : '')));
+  })
     .catch(e => { if (e.name === 'AbortError') return; clear(out); out.appendChild(h('p.err', e.message)); });
   return m;
 }
@@ -187,6 +193,95 @@ export async function openBriefing(docs, title, opts) {
   });
 }
 
+// Livro ou artigo longo: resumo seção por seção (capítulos do sumário do PDF, ou blocos de páginas)
+export async function pdfSections(doc) {
+  const hd = await openPdf(doc);
+  const n = hd.pdf.numPages;
+  let secs = [];
+  const add = async (items, level) => { for (const it of items) { try { const d = await resolveDest(hd, it.dest); if (d && d.n) secs.push({ title: (it.title || '').trim() || 'Seção', page: d.n, level }); } catch (e) {} } };
+  const out = await outline(hd);
+  await add(out, 1);
+  if (secs.length < 3) { const kids = out.flatMap(o => o.items || []); if (kids.length >= 3) { secs = []; await add(kids, 2); } }
+  secs.sort((a, b) => a.page - b.page);
+  secs = secs.filter((s, i) => i === 0 || s.page !== secs[i - 1].page);
+  if (secs.length < 2) { secs = []; for (let p = 1; p <= n; p += 20) secs.push({ title: 'Páginas ' + p + '–' + Math.min(n, p + 19), page: p, level: 1 }); }
+  if (secs[0].page > 1) secs.unshift({ title: 'Início', page: 1, level: 1 });
+  secs.forEach((s, i) => { s.end = i + 1 < secs.length ? Math.max(s.page, secs[i + 1].page - 1) : n; });
+  // muitas seções curtas: junta as vizinhas (no máximo ~40)
+  while (secs.length > 40) {
+    let k = 0, best = 1e9;
+    for (let i = 0; i < secs.length - 1; i++) { const len = secs[i + 1].end - secs[i].page; if (len < best) { best = len; k = i; } }
+    secs[k] = { title: secs[k].title + ' + ' + secs[k + 1].title, page: secs[k].page, end: secs[k + 1].end, level: secs[k].level };
+    secs.splice(k + 1, 1);
+  }
+  return { hd, n, secs };
+}
+
+export async function openSectionBriefing(doc) {
+  toast('Lendo o sumário do PDF…');
+  let info;
+  try { info = await pdfSections(doc); } catch (e) { toast('Não consegui abrir o PDF: ' + e.message); return; }
+  const { hd, n, secs } = info;
+  const st = await S.settings();
+  const model = st.aiProvider === 'claude' ? st.claudeModel : st.geminiModel;
+  const sel = secs.map(() => true);
+  const list = h('div.seclist');
+  const est = h('p.muted');
+  const recalc = () => {
+    const pages = secs.reduce((t, s, i) => t + (sel[i] ? s.end - s.page + 1 : 0), 0);
+    const tin = pages * 650 + sel.filter(Boolean).length * 400, tout = sel.filter(Boolean).length * 700;
+    const c = AI.costOf(model, tin, tout);
+    est.textContent = sel.filter(Boolean).length + ' seção(ões), ' + pages + ' páginas · cerca de ' + Math.round((tin + tout) / 1000) + ' mil tokens' + (c != null ? ' · custo aprox. ' + AI.fmtUsd(c) : '') + ' (' + (st.aiProvider === 'claude' ? 'Claude' : 'Gemini') + ')';
+  };
+  secs.forEach((s, i) => {
+    const cb = h('input', { type: 'checkbox' }); cb.checked = true;
+    cb.addEventListener('change', () => { sel[i] = cb.checked; recalc(); });
+    list.appendChild(h('label.check.secrow' + (s.level > 1 ? '.lv2' : ''), cb, h('span.grow', s.title), h('span.muted', 'p. ' + s.page + (s.end > s.page ? '–' + s.end : ''))));
+  });
+  recalc();
+  const ctrl = new AbortController();
+  const body = h('div', h('p.muted', n + ' páginas. As seções vêm do sumário do PDF (ou, se ele não tiver, de blocos de 20 páginas). O texto de cada seção vai para a IA; o resultado sai em Markdown, pronto para virar um texto do app ou ir ao Obsidian.'), est, list);
+  let result = '', running = false;
+  const m = modal('Resumo por seção (IA) — ' + S.docTitle(doc), body, [
+    { label: 'Cancelar', onclick: c => { ctrl.abort(); c(); } },
+    { label: 'Gerar', primary: true, onclick: async () => {
+      if (running) return; running = true;
+      const foot = m.box.querySelector('.modal-foot'); if (foot) foot.style.display = 'none';
+      clear(body);
+      const prog = h('div.secprog'); const prev = h('div.tdoc.md.secout');
+      const ctx = await AI.contextFor(doc);
+      let total = 0;
+      body.append(prog, prev);
+      result = '# Resumo por seção — ' + S.docTitle(doc) + '\n\n';
+      for (let i = 0; i < secs.length; i++) {
+        if (!sel[i]) continue;
+        const s = secs[i];
+        const row = h('div.secstat', h('span.grow', s.title), h('span.muted', 'lendo…'));
+        prog.appendChild(row);
+        try {
+          let text = '';
+          for (let p = s.page; p <= s.end; p++) text += '\n[p. ' + p + ']\n' + await pageText(hd, p);
+          row.lastChild.textContent = 'resumindo…';
+          const r = await AI.sectionSummary(S.docTitle(doc), s.title + ' (p. ' + s.page + '–' + s.end + ')', text, ctrl.signal, ctx);
+          total += r.cost || 0;
+          result += '## ' + s.title + ' (p. ' + s.page + (s.end > s.page ? '–' + s.end : '') + ')\n\n' + r.text.trim() + '\n\n';
+          row.lastChild.textContent = '✓';
+          prev.innerHTML = renderMarkdown(result);
+        } catch (e) {
+          if (e.name === 'AbortError') return;
+          row.lastChild.textContent = 'erro: ' + e.message;
+          if (/chave|crédito|Configure/i.test(e.message)) break;
+        }
+      }
+      body.appendChild(h('p.aicost', 'Custo aproximado total: ' + AI.fmtUsd(total)));
+      body.appendChild(h('div.btnrow',
+        h('button.pbtn', { type: 'button', onclick: async () => { const TX = await import('./textdoc.js'); const d = await TX.createTextDoc('Resumo — ' + S.docTitle(doc)); d.md = result; d.projects = doc.projects || []; await S.saveDoc(d); m.close(); window.leitorApp.openDoc(d.id); } }, 'Salvar como texto (novo documento)'),
+        h('button.sbtn', { type: 'button', onclick: async () => { doc.briefing = result; await S.saveDoc(doc); toast('Guardado no documento (vai junto na nota do Obsidian).'); } }, 'Guardar no PDF'),
+        h('button.sbtn', { type: 'button', onclick: async () => { await copyText(result); toast('Copiado.'); } }, 'Copiar')));
+    } },
+  ], { wide: true, focus: false, onclose: () => ctrl.abort() });
+}
+
 export async function openProjectsDialog(doc) {
   const projs = await S.projects();
   const set = new Set(doc.projects || []);
@@ -220,25 +315,39 @@ export async function openSettings(tab) {
   const theme = h('select', ['auto', 'claro', 'escuro'].map(t => h('option', { value: t }, { auto: 'Automático (igual ao sistema)', claro: 'Claro', escuro: 'Escuro' }[t]))); theme.value = st.theme;
   const rate = h('input', { type: 'range', min: 0.6, max: 1.6, step: 0.1 }); rate.value = st.ttsRate || 1;
   const testOut = h('span.muted');
+  const prov = h('select', [['gemini', 'Gemini (Google)'], ['claude', 'Claude (Anthropic)']].map(([v, l]) => h('option', { value: v }, l))); prov.value = st.aiProvider || 'gemini';
+  const cmodel = h('select', AI.CLAUDE_MODELS.map(([v, l]) => h('option', { value: v }, l))); cmodel.value = st.claudeModel || 'claude-sonnet-5-5';
+  const refp = h('input', { type: 'checkbox' }); refp.checked = st.refPopup !== false;
+  const cropS = h('input', { type: 'checkbox' }); cropS.checked = st.cropInSplit !== false;
   const panes = {
     geral: h('div',
       h('h3', 'Caneta'),
       h('label.check', pen, h('span', 'Só a S Pen escreve (o dedo arrasta e dá zoom)')),
       h('label.check', penEr, h('span', 'Botão da S Pen e ponta-borracha da caneta (ex.: reMarkable 2) apagam')),
+      h('h3', 'Tela dividida'),
+      h('label.check', cropS, h('span', 'Nos PDFs, cortar as bordas brancas para o texto ocupar a largura do painel (como na Boox)')),
+      h('h3', 'Referências'),
+      h('label.check', refp, h('span', 'Ao tocar numa citação do PDF, mostrar título, autores, resumo e citações do artigo citado (busca na internet)')),
       h('h3', 'Aparência'),
       h('label.field', h('span', 'Tema do app'), theme),
       h('label.field', h('span', 'Velocidade da leitura em voz alta'), rate),
       h('h3', 'Tradução'),
       inp('translateTo', 'Idioma de destino (código: pt, en, es, fr, de, it)')),
     ia: h('div',
-      h('p.muted', 'Como conseguir a chave: veja a aba Guia.'),
-      inp('geminiKey', 'Chave da API do Gemini (fica guardada só neste aparelho)', 'password', 'AIza…'),
+      h('label.field', h('span', 'IA usada pelo app'), prov),
+      h('p.muted', 'Como conseguir as chaves: veja a aba Guia. As chaves ficam guardadas só neste aparelho (não vão para a sincronização).'),
+      h('h3', 'Claude (Anthropic)'),
+      inp('claudeKey', 'Chave da API do Claude', 'password', 'sk-ant-…'),
+      h('label.field', h('span', 'Modelo do Claude'), cmodel),
+      h('h3', 'Gemini (Google)'),
+      inp('geminiKey', 'Chave da API do Gemini', 'password', 'AIza…'),
       h('div.inrow', inp('geminiModel', 'Modelo'), h('button.sbtn', { type: 'button', onclick: async () => {
-        await S.setSettings({ geminiKey: f.geminiKey.value.trim(), geminiModel: f.geminiModel.value.trim() });
+        await S.setSettings({ geminiKey: f.geminiKey.value.trim(), geminiModel: f.geminiModel.value.trim(), claudeKey: f.claudeKey.value.trim(), claudeModel: cmodel.value, aiProvider: prov.value });
         testOut.textContent = 'Testando…';
-        try { const r = await AI.runAction('translate', 'Optical tweezers.', '', ''); testOut.textContent = 'Funcionou (' + r.model + '): ' + r.text.slice(0, 60); } catch (e) { testOut.textContent = e.message; }
+        try { const r = await AI.runAction('translate', 'Optical tweezers.', '', ''); testOut.textContent = 'Funcionou (' + r.provider + ', ' + r.model + '): ' + r.text.slice(0, 60) + (r.cost != null ? ' · custo do teste: ' + AI.fmtUsd(r.cost) : ''); } catch (e) { testOut.textContent = e.message; }
       } }, 'Testar')), testOut,
       inp('language', 'Idioma das respostas'),
+      priceTable(),
       h('label.field', h('span', 'Contexto geral da sua pesquisa (usado quando o PDF não está num projeto com contexto próprio)'), ctx)),
     obsidian: h('div',
       inp('obsidianVault', 'Nome do cofre (exatamente como aparece no Obsidian)'),
@@ -261,11 +370,22 @@ export async function openSettings(tab) {
   modal('Configurações', h('div.settings', tabRow, holder), [
     { label: 'Cancelar' },
     { label: 'Salvar', primary: true, onclick: async c => {
-      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, theme: theme.value, ttsRate: +rate.value };
+      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, theme: theme.value, ttsRate: +rate.value };
       for (const k in f) p[k] = f[k].value.trim();
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
   ], { wide: true, focus: false });
+}
+
+// custo aproximado das consultas mais comuns
+function priceTable() {
+  const rows = [['claude-haiku-4-5-20251001', 'Claude Haiku 4.5'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5'], ['claude-opus-5-5', 'Claude Opus 5.5'], ['gemini-flash', 'Gemini Flash (pago)']];
+  const est = (m, tin, tout) => AI.fmtUsd(AI.costOf(m, tin, tout));
+  return h('div.pricebox',
+    h('h3', 'Quanto custa uma consulta (aproximado)'),
+    h('table.pricetab', h('tr', h('th', 'Modelo'), h('th', 'Explicar um trecho'), h('th', 'Resumo das anotações'), h('th', 'Livro de 300 p. por capítulo')),
+      rows.map(([m, l]) => h('tr', h('td', l), h('td', est(m, 2000, 600)), h('td', est(m, 10000, 1500)), h('td', est(m, 150000, 16000))))),
+    h('p.muted', 'Estimativas com preços de referência de outubro de 2026 (US$ por milhão de tokens: Haiku 4.5 1/5, Sonnet 5.5 2/10, Opus 5.5 4/20; Gemini Flash ~0,75/3,75). Explicar ≈ 2 mil tokens de entrada e 600 de saída; resumo ≈ 10 mil e 1,5 mil. O Gemini tem também um plano gratuito com limites. Confira os preços atuais nos sites da Anthropic e do Google. Depois de cada resposta, o app mostra o custo aproximado daquela consulta.'));
 }
 
 // Aba Sincronização (Google Drive)
@@ -316,7 +436,7 @@ function guideNodes() {
         'O botão ☰ no topo abre o painel lateral: Sumário, Páginas, Anotações, Busca e Ligações.')),
     sec('Caneta (S Pen) e dedo',
       ul('Com Caneta, Marca-texto ou Borracha, só a S Pen escreve. O dedo arrasta e dois dedos dão zoom.',
-        'Apagar sem trocar de ferramenta: aperte o botão lateral da S Pen enquanto passa a ponta no traço, ou use a ponta-borracha de canetas que têm uma (como a do reMarkable 2). Funciona em qualquer ferramenta. Dá para desligar na aba Geral.',
+        'Apagar sem trocar de ferramenta: use a ponta-borracha de canetas que têm uma (como a do reMarkable 2), ou, no app Android, segure o botão lateral da S Pen enquanto passa a ponta no traço. Funciona em qualquer ferramenta. Dá para desligar na aba Geral.',
         'Se quiser escrever com o dedo, desligue “Só a S Pen escreve” na aba Geral.',
         'Desfazer e refazer ficam na barra da esquerda.',
         'Margem expandida (ícone de página com margem) abre espaço ao lado da página para escrever.')),
@@ -344,7 +464,8 @@ function guideNodes() {
         'Equação no texto: $F = -\\kappa x$. Equação destacada: $$ ... $$ (em linhas próprias).',
         'Numerar: com o cursor dentro de uma equação destacada, toque em “(n)” (ele acrescenta \\eqn). Fora de uma equação, “(n)” cria uma equação numerada nova. A numeração segue a ordem do caderno ou do texto.',
         'Citar: toque em “ref” e escolha a equação na lista, (1), (2)… O app cria o nome (\\label{eq1}) na equação, se ela ainda não tiver, e escreve \\eqref{eq1}, que aparece como “(1)”. Com o cursor dentro de uma equação, “ref” oferece “Numerar e dar nome a esta equação”.',
-        'Tabela: botão ▦ e escolha linhas × colunas na grade. No documento de texto, toque na tabela pronta para editar as células numa janela.',
+        'Tabela: botão ▦ e escolha linhas × colunas na grade, ou digite o número de linhas e colunas e toque em Inserir. No documento de texto, toque na tabela pronta para editar as células numa janela.',
+        'Imagens no texto: ao inserir ou colar, aparece o ajuste de tamanho (25%, 50%, 75%, 100% ou arraste a alça azul). Toque na imagem para ajustar de novo.',
         'Também vale \\begin{equation} ... \\end{equation} (numerada).',
         '“Prévia” mostra o resultado enquanto você digita. No Obsidian, a numeração vai como \\tag{n}.')),
     sec('Documento de texto (Novo texto)',
@@ -372,6 +493,17 @@ function guideNodes() {
         'Escolha o destino: neste documento, outro PDF ou caderno, Digest, nota do Obsidian ou site. “Escolher o destino tocando na página” marca o ponto exato.',
         'Para seguir o link, toque nele com a ferramenta Ler.',
         'Na página de destino aparece um ← que mostra de onde vêm os links.')),
+    sec('Tela dividida',
+      ul('Botão ◫ no topo (ou ⋯ → Dividir a tela): escolha o que abrir do outro lado — PDF, caderno ou texto (ou o mesmo PDF, para ver duas partes).',
+        'Nos PDFs, as bordas brancas são cortadas para o texto ocupar a largura do painel (como na Boox). Dá para ligar/desligar em ⋯ → Cortar as bordas, e mudar o padrão em Configurações → Geral.',
+        'Links tocados de um lado abrem do outro lado.',
+        'Cada lado tem a sua troca rápida: o botão ⇆ e o deslize de dois dedos valem só para aquele lado. O lado ativo fica com uma linha azul embaixo do topo.',
+        'Para voltar a uma tela só, toque em ◫ no lado que quer manter.')),
+    sec('Referências dos artigos e “Ler depois”',
+      ul('Num PDF, toque numa citação (o número da referência, quando o PDF tem esse link): aparece um cartão com título, autores, revista, ano, número de citações e o resumo do artigo citado.',
+        'Os dados vêm de bases abertas (Crossref e OpenAlex). O Google Acadêmico não tem acesso aberto para apps; o botão “Google Acadêmico ↗” abre a busca lá.',
+        '“Ler depois” guarda o artigo. Se o PDF está num projeto, ele aparece na aba “Para ler” do projeto, numa tabela em ordem, com o resumo e de qual artigo veio. Todos ficam também em Biblioteca → Ler depois.',
+        'Para desligar o cartão e voltar à prévia da página: Configurações → Geral → Referências.')),
     sec('Troca rápida entre arquivos',
       ul('Deslize dois dedos para a esquerda sobre a página: volta ao arquivo aberto antes (PDF ou caderno). Repita para alternar entre os dois.',
         'Deslize dois dedos para a direita, ou toque no botão ⇆ do topo: aparece a lista dos arquivos recentes.',
@@ -387,6 +519,16 @@ function guideNodes() {
         'Aqui no app (web): Configurações → Sincronização → cole o ID do cliente → “Entrar com a conta Google e ligar”. Na janela do Google, escolha a conta; como o app está em teste, pode aparecer o aviso “O Google não verificou este app”: toque em “Continuar”.',
         'App Android: em “Clientes” → “Criar cliente” → tipo “Android”. Nome do pacote: com.tiago.leitorpesquisa. “Impressão digital do certificado SHA-1”: veja no LEIA-ME do projeto Android como obter (um comando no PC). Criar. No app Android não é preciso colar nada: Configurações → Sincronização → “Entrar com a conta Google e ligar”.'),
       h('p.muted', 'Depois disso a sincronização é automática. Se um mesmo item for editado nos dois aparelhos antes de sincronizar, fica a edição mais recente (campos diferentes de um mesmo documento se juntam). Apagar num aparelho apaga nos outros.')),
+    sec('Claude (IA): chave e custo',
+      ol('Entre em console.anthropic.com e crie uma conta (pode ser com o Google).',
+        'Em Billing, adicione crédito (pré-pago; por exemplo US$ 5).',
+        'Em API Keys, toque em “Create Key”, dê um nome (ex.: Leitor) e copie a chave (começa com “sk-ant-”).',
+        'Aqui no app: Configurações → IA → “IA usada pelo app: Claude” → cole a chave → escolha o modelo → Testar → Salvar.'),
+      h('p.muted', 'A tabela em Configurações → IA mostra o custo aproximado de cada tipo de consulta. Depois de cada resposta, o app mostra o custo daquela consulta. A chave fica só neste aparelho.')),
+    sec('Resumo por capítulo (livros e artigos longos)',
+      ul('No PDF: ⋯ → “Resumo por capítulo/seção (IA)”. As seções vêm do sumário do PDF; sem sumário, o app divide em blocos de 20 páginas.',
+        'Antes de gerar, o app mostra quantas páginas e o custo aproximado. Desmarque as seções que não quer.',
+        'O resultado pode virar um documento de texto do app, ir junto com o PDF para o Obsidian ou ser copiado.')),
     sec('Chave do Gemini (IA)',
       ol('No computador ou no tablet, entre em aistudio.google.com com sua conta Google.',
         'Na primeira vez, aceite os termos e toque em Continue.',
@@ -400,7 +542,7 @@ function guideNodes() {
         'As respostas da IA (explicar, perguntar, resumo) para PDFs desse projeto passam a usar esse contexto.',
         'PDFs fora de projetos usam o “Contexto geral” da aba IA.')),
     sec('Tradução e Wikipédia',
-      ul('Traduzir abre uma janela aqui mesmo. No Chrome do computador usa o tradutor do próprio Chrome (sem internet); se não houver, usa o Gemini (com a chave configurada). O botão “Google Tradutor ↗” abre o site.',
+      ul('Traduzir abre uma janela aqui mesmo, com o Google Tradutor (gratuito, sem chave). Se ele falhar, o app tenta o MyMemory e o tradutor do próprio Chrome. “Traduzir com IA” usa o Claude ou o Gemini; “Google Tradutor ↗” abre o site.',
         'Wikipédia mostra o resumo do termo selecionado, em português ou inglês, com outros resultados e o link para o artigo completo.',
         'As duas janelas podem ser arrastadas pelo topo.')),
     sec('Exportar e Obsidian',

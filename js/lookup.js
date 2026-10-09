@@ -15,7 +15,7 @@ function guessLang(t) {
 }
 
 // cartão flutuante, arrastável pelo topo
-function floatCard(kind, title, box) {
+export function floatCard(kind, title, box) {
   document.querySelectorAll('.lookpop.' + kind).forEach(e => e.remove());
   const head = h('div.lookhead', h('b.grow', title));
   const body = h('div.lookbody');
@@ -45,7 +45,8 @@ function floatCard(kind, title, box) {
 }
 
 // ---------- Tradução ----------
-// 1) tradutor do próprio Chrome (no aparelho, sem internet, quando existir)  2) Gemini  3) Google Tradutor (fora do app)
+// 1) Google Tradutor (serviço gratuito, sem chave)  2) MyMemory (gratuito, com limite diário)
+// 3) tradutor do próprio Chrome (sem internet, quando existir)  4) IA (Claude ou Gemini), pelo botão
 export async function translatePop(text, box, doc) {
   const st = await S.settings();
   let target = st.translateTo || 'pt';
@@ -56,38 +57,80 @@ export async function translatePop(text, box, doc) {
   sel.value = target;
   head.insertBefore(sel, head.lastChild);
   let out = '';
+  const hasAI = !!(st.aiProvider === 'claude' ? st.claudeKey : st.geminiKey);
   const run = async (prefer) => {
     clear(body); clear(foot);
     body.appendChild(h('p.muted', 'Traduzindo…'));
     target = sel.value;
-    let engine = '';
+    let engine = '', isAI = false;
     try {
-      if (prefer !== 'gemini') {
-        const r = await chromeTranslate(text, src, target);
-        if (r) { out = r; engine = 'Tradutor do Chrome (no aparelho)'; }
-      }
-      if (!out || prefer === 'gemini') {
-        if (st.geminiKey) {
-          const langName = (LANGS.find(l => l[0] === target) || [0, 'português'])[1].toLowerCase();
-          out = (await AI.runAction('translate', text, doc ? S.docTitle(doc) : '', '', undefined, '', langName)).text;
-          engine = 'Gemini';
-        }
+      if (prefer === 'ai') {
+        const langName = (LANGS.find(l => l[0] === target) || [0, 'português'])[1].toLowerCase();
+        out = (await AI.runAction('translate', text, doc ? S.docTitle(doc) : '', '', undefined, '', langName)).text;
+        engine = await AI.aiName(); isAI = true;
+      } else {
+        out = await googleFree(text, target);
+        if (out) engine = 'Google Tradutor';
+        if (!out) { out = await myMemory(text, src, target); if (out) engine = 'MyMemory'; }
+        if (!out) { out = await chromeTranslate(text, src, target); if (out) engine = 'Tradutor do Chrome (no aparelho)'; }
       }
     } catch (e) { clear(body); body.appendChild(h('p.err', e.message)); }
-    if (out) { clear(body); body.appendChild(h('div.trtext', mdToNodes(out))); body.appendChild(h('p.muted.small', engine)); }
-    else if (!body.querySelector('.err')) {
+    if (out) {
       clear(body);
-      body.appendChild(h('p', 'Não há tradutor disponível dentro do app neste aparelho.'));
-      body.appendChild(h('p.muted', 'Para traduzir aqui mesmo, configure a chave do Gemini (Configurações → IA). Ou abra no Google Tradutor.'));
+      body.appendChild(isAI ? h('div.trtext', mdToNodes(out)) : h('div.trtext.plain', out));
+      body.appendChild(h('p.muted.small', engine));
+    } else if (!body.querySelector('.err')) {
+      clear(body);
+      body.appendChild(h('p', 'Não consegui traduzir aqui agora (sem internet ou serviço indisponível).'));
+      body.appendChild(h('p.muted', hasAI ? 'Tente “Traduzir com IA” ou abra no Google Tradutor.' : 'Abra no Google Tradutor, ou configure uma IA em Configurações → IA.'));
     }
     foot.append(
       out ? h('button.sbtn.small', { type: 'button', onclick: () => { copyText(out); toast('Tradução copiada.'); } }, 'Copiar') : null,
-      engine && engine !== 'Gemini' && st.geminiKey ? h('button.sbtn.small', { type: 'button', onclick: () => { out = ''; run('gemini'); } }, 'Traduzir com IA') : null,
+      hasAI && !isAI ? h('button.sbtn.small', { type: 'button', onclick: () => { out = ''; run('ai'); } }, 'Traduzir com IA') : null,
       h('button.sbtn.small', { type: 'button', onclick: () => AI.googleTranslate(text) }, 'Google Tradutor ↗'));
   };
   sel.addEventListener('change', () => { out = ''; run(); });
   run();
   return card;
+}
+
+function chunks(text, n) {
+  const out = []; let cur = '';
+  for (const part of String(text).split(/(?<=[.!?;:])\s+/)) {
+    if ((cur + ' ' + part).length > n && cur) { out.push(cur); cur = part; } else cur = cur ? cur + ' ' + part : part;
+    while (cur.length > n) { out.push(cur.slice(0, n)); cur = cur.slice(n); }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+// Google Tradutor (endereço gratuito usado pelas extensões do Chrome; não é oficial, pode limitar uso intenso)
+async function googleFree(text, target) {
+  try {
+    let out = '';
+    for (const p of chunks(text, 1500)) {
+      const r = await withTimeout(fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + encodeURIComponent(target) + '&dt=t&q=' + encodeURIComponent(p)), 8000);
+      if (!r || !r.ok) return null;
+      const j = await r.json();
+      out += (out ? ' ' : '') + (j[0] || []).map(x => x[0] || '').join('');
+    }
+    return out.trim() || null;
+  } catch (e) { return null; }
+}
+
+// MyMemory (gratuito; cerca de 5 mil caracteres por dia sem cadastro)
+async function myMemory(text, src, target) {
+  try {
+    let out = '';
+    for (const p of chunks(text, 450)) {
+      const r = await withTimeout(fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(p) + '&langpair=' + src + '|' + target), 8000);
+      if (!r || !r.ok) return null;
+      const j = await r.json();
+      if (!j.responseData || j.responseStatus !== 200) return null;
+      out += (out ? ' ' : '') + j.responseData.translatedText;
+    }
+    return out.trim() || null;
+  } catch (e) { return null; }
 }
 
 function withTimeout(p, ms) { return Promise.race([p, new Promise(r => setTimeout(() => r(null), ms))]); }

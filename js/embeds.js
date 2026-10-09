@@ -34,6 +34,8 @@ export function hydrate(el, ctx = {}) {
   el.querySelectorAll('img[src^="#img-"]').forEach(img => {
     const id = img.getAttribute('src').slice(5);
     img.removeAttribute('src'); img.classList.add('mdimg'); img.draggable = false;
+    img.dataset.file = id;
+    if (img.getAttribute('width')) { img.style.width = img.getAttribute('width') + 'px'; img.removeAttribute('width'); }
     fileUrl(id).then(u => { if (u) img.src = u; else img.alt = '(imagem não encontrada)'; });
   });
   // vídeo do YouTube: miniatura; toque para assistir aqui mesmo

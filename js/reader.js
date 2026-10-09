@@ -19,8 +19,9 @@ import { textTargets } from './textdoc.js';
 import { buildMathPal } from './mathpal.js';
 
 export class Reader {
-  constructor(app) {
+  constructor(app, side = 0) {
     this.app = app;
+    this.sideIdx = side;
     this.tool = 'read';
     this.viewers = [];
     this.active = null;
@@ -30,7 +31,7 @@ export class Reader {
     this.textEditor = new NB.TextEditor(this);
     // colar imagem (Ctrl+V / colar) no caderno
     document.addEventListener('paste', async e => {
-      if (!this.root.isConnected || !this.doc || !NB.isNotebook(this.doc) || this.textEditor.active) return;
+      if (!this.root.isConnected || !this.isFront() || !this.doc || !NB.isNotebook(this.doc) || this.textEditor.active) return;
       if (e.target.closest && e.target.closest('input, textarea')) return;
       const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(x => x.type.startsWith('image/'));
       if (!it) return;
@@ -60,7 +61,7 @@ export class Reader {
     document.addEventListener('pointerup', up, true);
     document.addEventListener('pointercancel', up, true);
     document.addEventListener('keydown', e => {
-      if (!this.root.isConnected) return;
+      if (!this.root.isConnected || !this.isFront()) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); this.redo(); }
     });
@@ -153,33 +154,42 @@ export class Reader {
     for (const id of ids) { const d = await S.getDoc(id); if (d) out.push(d); }
     return out;
   }
-  async switchTo(id) {
-    const v = this.active;
-    if (this.root.isConnected && v && v.doc) { v.doc.lastKey = v.currentKey(); v.doc.lastY = v.currentOffset(); await S.saveDoc(v.doc); }
+  // troca rápida (em cada lado da tela dividida, separadamente)
+  async switchTo(id, side) {
+    side = side === undefined ? this.sideIdx : side;
+    const scr = this.app.screenOn ? this.app.screenOn(side) : null;
+    if (scr === this && this.root.isConnected && this.active && this.active.doc) { const v = this.active; v.doc.lastKey = v.currentKey(); v.doc.lastY = v.currentOffset(); await S.saveDoc(v.doc); }
     if (this.textEditor.active) await this.textEditor.close();
-    await this.app.openDoc(id);
+    await this.app.openDoc(id, null, side);
     const d = await S.getDoc(id);
     if (d) toast('↔ ' + S.docTitle(d), 1600);
   }
-  async quickSwitch(curId) {
-    curId = curId || (this.root.isConnected && this.doc ? this.doc.id : '');
-    const list = (await this.recentDocs()).filter(d => d.id !== curId);
-    if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
-    this.switchTo(list[0].id);
+  async otherDocs(curId, side) {
+    const other = this.app.split && this.app.docOnSide ? this.app.docOnSide(1 - side) : '';
+    return (await this.recentDocs()).filter(d => d.id !== curId && d.id !== other);
   }
-  async recentMenu(e, curId) {
+  async quickSwitch(curId, side) {
+    side = side === undefined ? this.sideIdx : side;
+    curId = curId || (this.root.isConnected && this.doc ? this.doc.id : '');
+    const list = await this.otherDocs(curId, side);
+    if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
+    this.switchTo(list[0].id, side);
+  }
+  async recentMenu(e, curId, side) {
+    side = side === undefined ? this.sideIdx : side;
     document.querySelectorAll('.recentbar').forEach(x => x.remove());
     curId = curId || (this.root.isConnected && this.doc ? this.doc.id : '');
-    const list = (await this.recentDocs()).filter(d => d.id !== curId).slice(0, 8);
+    const list = (await this.otherDocs(curId, side)).slice(0, 8);
     if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
     const bar = h('div.recentbar', { role: 'dialog', 'aria-label': 'Arquivos recentes' },
-      h('div.rbhead', h('b', 'Recentes'), h('span.muted', 'Dica: deslize dois dedos para a esquerda na página para voltar ao anterior'), h('div.grow'), btn('close', '', () => bar.remove(), { iconOnly: true, title: 'Fechar' })),
+      h('div.rbhead', h('b', 'Recentes' + (this.app.split ? (side ? ' — lado direito' : ' — lado esquerdo') : '')), h('span.muted', 'Dica: deslize dois dedos para a esquerda na página para voltar ao anterior'), h('div.grow'), btn('close', '', () => bar.remove(), { iconOnly: true, title: 'Fechar' })),
       h('div.rbrow', list.map((d, i) => {
         const th = h('div.rbthumb');
         this.app.library.thumb(d, th).catch(() => {});
-        return h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { bar.remove(); this.switchTo(d.id); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF'));
+        return h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { bar.remove(); this.switchTo(d.id, side); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF'));
       })));
     document.body.appendChild(bar);
+    if (this.app.split) { const r = this.app.slots[side].getBoundingClientRect(); bar.style.left = (r.left + r.width / 2) + 'px'; }
     setTimeout(() => {
       const off = ev => { if (!bar.contains(ev.target)) { bar.remove(); document.removeEventListener('pointerdown', off, true); } };
       document.addEventListener('pointerdown', off, true);
@@ -188,6 +198,7 @@ export class Reader {
   // dois dedos deslizando na horizontal: esquerda = arquivo anterior; direita = lista de recentes
   bindSwipe() { bindTwoFingerSwipe(this.panes, () => this.quickSwitch(), () => this.recentMenu()); }
 
+  isFront() { return !this.app.split || this.app.side === this.sideIdx; }
 
   async open(doc, at) {
     this.settings = await S.settings();
@@ -214,6 +225,8 @@ export class Reader {
     if (this.sideOpen) this.renderSide();
     if (!nb) this.app.indexDoc(this.doc);
     this.noteRecent(this.doc.id);
+    // tela dividida: PDF com as bordas cortadas (texto na largura do painel)
+    if (!nb && this.active) this.active.setCrop(this.cropManual !== undefined ? this.cropManual : (this.app.split && (this.settings || {}).cropInSplit !== false));
   }
 
   addViewer() {
@@ -323,6 +336,7 @@ export class Reader {
     if (target.docId === v.doc.id) { v.goTo(target.pageKey, target.y || 0, { flash: true }); this.onNav(v); return; }
     const d = await S.getDoc(target.docId);
     if (!d) { toast('O documento de destino não está mais na biblioteca.'); return; }
+    if (this.app.split) { this.app.openInOther(this.sideIdx, target); return; }
     if (d.kind === 'text') { this.app.openAt(d.id, target.pageKey, target.y); return; }
     if (this.viewers.length > 1) {
       const other = this.viewers.find(x => x !== v);
@@ -337,6 +351,10 @@ export class Reader {
   }
 
   async toggleSplit() {
+    if (this.app.split) { this.app.exitSplit(this.sideIdx); return; }
+    this.app.chooseSplit(this.doc);
+  }
+  async toggleSplitOld() {
     if (this.viewers.length > 1) { this.closeViewer(this.viewers[1]); return; }
     const docs = await S.allDocs();
     const list = h('div.picklist',
@@ -636,6 +654,8 @@ export class Reader {
   // ---------- seleção de texto ----------
   onSelection() {
     if (!this.root.isConnected || this.tool !== 'read') return;
+    const ws = window.getSelection();
+    if (ws && ws.rangeCount && ws.anchorNode && !this.root.contains(ws.anchorNode)) { this.hideSel(); return; }
     if (this.selDragging) { this.selMenu.classList.remove('show'); return; }   // o menu só aparece ao soltar
     let seg = null, sv = null;
     for (const v of this.viewers) { const s = v.selectionSegments(); if (s) { seg = s; sv = v; break; } }
@@ -927,8 +947,25 @@ export class Reader {
     if (t.type === 'digest') { this.app.showDigest(t.id); return; }
   }
 
-  // pré-visualização de referência / figura (links internos do PDF)
+  // link interno do PDF: citação -> cartão do artigo citado; figura/seção -> prévia da página
   async previewPdfLink(v, l, x, y) {
+    if (!l.url && (this.settings || {}).refPopup !== false) {
+      const d = await resolveDest(v.hd, l.dest);
+      if (d) {
+        try {
+          const { referenceText, looksLikeReference, refPopup } = await import('./refs.js');
+          const t = await referenceText(v.hd, d);
+          if (looksLikeReference(t)) {
+            refPopup({ text: t, box: { left: x, right: x, top: y, bottom: y }, fromDoc: v.doc, fromPage: pageNum(v.currentKey()), onShowPdf: () => { document.querySelectorAll('.lookpop.ref').forEach(e => e.remove()); this.previewPdfImage(v, l, x, y); } });
+            return;
+          }
+        } catch (e) { console.warn('ref', e); }
+      }
+    }
+    return this.previewPdfImage(v, l, x, y);
+  }
+
+  async previewPdfImage(v, l, x, y) {
     if (l.url) {
       popMenu(x, y, [{ icon: 'fwd', label: 'Abrir ' + l.url.slice(0, 50), onclick: () => openExternal(l.url) }, { icon: 'copy', label: 'Copiar endereço', onclick: () => copyText(l.url) }]);
       return;
@@ -1228,11 +1265,14 @@ export class Reader {
       nb ? { icon: 'plus', label: 'Nova página no fim', onclick: () => this.nbAddPage(this.active, this.active.pages.length - 1) } : { icon: 'doc', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
       nb ? { icon: 'notebook', label: 'Capa do caderno…', onclick: () => this.coverMenu(d, e.clientX - 200, e.clientY + 10, () => this.nbRefresh(this.active)) } : null,
       { icon: 'ai', label: 'Resumo das minhas anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
+      nb || d.kind ? null : { icon: 'ai', label: 'Resumo por capítulo/seção (IA)' + (this.active && this.active.hd && this.active.hd.pdf.numPages > 40 ? ' — recomendado para este PDF' : ''), onclick: async () => { const { openSectionBriefing } = await import('./dialogs.js'); openSectionBriefing(d); } },
       { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => nb ? openNotebookExport(d) : openObsidianDialog(d) },
       nb ? null : { icon: 'speak', label: 'Ler a página atual em voz alta', onclick: async () => { const k = this.active.currentKey(); if (k[0] === 'p') speak(await pageText(this.active.hd, pageNum(k))); } },
       { icon: 'stop', label: 'Parar leitura em voz alta', onclick: () => stopSpeak() },
       nb ? null : { icon: 'blank', label: 'Inserir página em branco depois desta', onclick: () => { const v = this.active; this.insertBlank(v, v.pages.find(p => p.key === v.currentKey()), false); } },
       { icon: 'bookmark', label: 'Marcar esta página', onclick: () => this.toggleBookmark(this.active.currentKey()) },
+      nb ? null : { icon: 'crop', label: (this.active && this.active.cropBox ? '✓ ' : '') + 'Cortar as bordas (texto na largura da tela)', onclick: () => { this.cropManual = !(this.active && this.active.cropBox); this.active.setCrop(this.cropManual); } },
+      { icon: 'split', label: this.app.split ? 'Fechar a tela dividida' : 'Dividir a tela', onclick: () => this.toggleSplit() },
       { icon: 'gear', label: 'Configurações', onclick: () => this.app.openSettings() },
     ]);
   }

@@ -60,6 +60,7 @@ export class Viewer {
   destroy() { this.offAnn(); this.io.disconnect(); this.ro.disconnect(); this.el.remove(); }
 
   async open(doc, at) {
+    this.cropBox = null;
     this.doc = doc;
     this.clearSelection();
     this.hd = isNotebook(doc) ? null : await openPdf(doc);
@@ -75,6 +76,24 @@ export class Viewer {
     S.saveDoc(doc);
   }
 
+  // ---------- cortar as bordas (como na Boox): o texto ocupa a largura do painel ----------
+  async setCrop(on) {
+    on = !!on && !!this.hd;
+    if (on === !!this.cropBox) return;
+    const k = this.currentKey(), off = this.currentOffset();
+    if (on) {
+      const docId = this.doc.id;
+      const box = cropCache.get(docId) || await detectCrop(this.hd);
+      if (!this.doc || this.doc.id !== docId) return;
+      cropCache.set(docId, box);
+      this.cropBox = box;
+    } else this.cropBox = null;
+    this.scale = this.fitScale() * this.zoom;
+    for (const sl of this.slots.values()) { this.sizeSlot(sl); sl.rendered = 0; }
+    this.renderVisible();
+    requestAnimationFrame(() => this.goTo(k, off, { noHist: true, exact: true }));
+  }
+
   // reconstrói a lista (depois de inserir/remover página em branco)
   async refreshPages() {
     const k = this.currentKey();
@@ -88,7 +107,7 @@ export class Viewer {
 
   fitScale() {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
-    const maxW = Math.max(...this.pages.map(p => p.w), 1) * (anyMargin ? 1 + MARGIN_FRAC : 1);
+    const maxW = Math.max(...this.pages.map(p => p.w * (this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1)), 1) * (anyMargin ? 1 + MARGIN_FRAC : 1);
     const avail = Math.max(200, this.scroller.clientWidth - 28);
     return avail / maxW;
   }
@@ -117,11 +136,12 @@ export class Viewer {
       slot.appendChild(tbl);
       svg.appendChild(sv('g', { class: 'ann' }));
       svg.appendChild(live);
-      const wrap = h('div.slotwrap', head, slot);
+      const clip = h('div.slotclip', slot);   // recorte das margens (modo "cortar bordas")
+      const wrap = h('div.slotwrap', head, clip);
       wrap.dataset.key = p.key;
       slot.dataset.key = p.key;
       this.pagesEl.appendChild(wrap);
-      const s = { p, wrap, slot, pg, mg, svg, live, head, tbl, iml, rendered: 0, renderTask: null };
+      const s = { p, wrap, slot, clip, pg, mg, svg, live, head, tbl, iml, rendered: 0, renderTask: null };
       this.slots.set(p.key, s);
       this.sizeSlot(s);
       this.io.observe(wrap);
@@ -136,7 +156,17 @@ export class Viewer {
     const { p } = s;
     const sc = this.scale;
     const mw = this.hasMargin(p.key) ? p.w * MARGIN_FRAC : 0;
-    s.wrap.style.width = ((p.w + mw) * sc) + 'px';
+    const cb = this.cropBox && p.kind === 'pdf' && !mw ? this.cropBox : null;
+    if (cb) {
+      const [fx, fy, fw, fh] = cb;
+      s.wrap.style.width = (p.w * fw * sc) + 'px';
+      s.clip.style.width = (p.w * fw * sc) + 'px'; s.clip.style.height = (p.h * fh * sc) + 'px'; s.clip.style.overflow = 'hidden';
+      s.slot.style.marginLeft = (-p.w * fx * sc) + 'px'; s.slot.style.marginTop = (-p.h * fy * sc) + 'px';
+    } else {
+      s.clip.style.width = ''; s.clip.style.height = ''; s.clip.style.overflow = '';
+      s.slot.style.marginLeft = ''; s.slot.style.marginTop = '';
+    }
+    s.wrap.style.width = cb ? s.wrap.style.width : ((p.w + mw) * sc) + 'px';
     s.slot.style.width = ((p.w + mw) * sc) + 'px';
     s.slot.style.height = (p.h * sc) + 'px';
     s.pg.style.width = (p.w * sc) + 'px';
@@ -297,7 +327,19 @@ export class Viewer {
     }
     for (const a of list.filter(a => a.kind === 'link')) {
       const lg = sv('g', { 'data-id': a.id });
-      for (const [x, y, w, hh] of a.rects) lg.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'ulink', rx: 1.5 }));
+      if (this.isNb) {
+        // caderno: símbolo de link ao lado do começo e sublinhado no resto (como nos PDFs)
+        a.rects.forEach(([x, y, w, hh], k) => {
+          lg.appendChild(sv('rect', { x, y, width: w, height: hh, fill: 'transparent' }));
+          lg.appendChild(sv('line', { x1: x, x2: x + w, y1: y + hh + 1.5, y2: y + hh + 1.5, class: 'nblinkline' }));
+          if (k === 0) {
+            const cx = x - 8, cy = y + Math.min(hh, 24) / 2;
+            lg.appendChild(sv('circle', { cx, cy, r: 6.2, class: 'nblinkdot' }));
+            const t = sv('text', { x: cx, y: cy + 3, 'text-anchor': 'middle', 'font-size': 8, fill: '#fff', 'font-weight': 700 }); t.textContent = '↗';
+            lg.appendChild(t);
+          }
+        });
+      } else for (const [x, y, w, hh] of a.rects) lg.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'ulink', rx: 1.5 }));
       g.appendChild(lg);
     }
     for (const a of list.filter(a => a.kind === 'ink')) {
@@ -344,6 +386,23 @@ export class Viewer {
       hydrate(el, { onLink: href => this.app.openLink && this.app.openLink(href), onTask: i => onTaskClick(a, i), toc: () => this.nbToc() });
       s.tbl.appendChild(el);
     }
+  }
+
+  // no caderno, o link fica do tamanho do que está dentro do retângulo (escrita, texto, imagem)
+  contentBox(s, [rx, ry, rw, rh]) {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    const inR = (x, y) => x >= rx && x <= rx + rw && y >= ry && y <= ry + rh;
+    for (const a of this.annsOf(s.p.key)) {
+      if (a.kind === 'ink') for (const p of a.pts) if (inR(p[0], p[1])) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+      if (a.kind === 'img' || a.kind === 'tbox') {
+        const el = a.kind === 'tbox' ? this.boxEl(s, a.id) : null;
+        const ah = a.kind === 'tbox' ? (el ? el.offsetHeight / this.scale : 16) : a.h;
+        const ix0 = Math.max(rx, a.x), iy0 = Math.max(ry, a.y), ix1 = Math.min(rx + rw, a.x + a.w), iy1 = Math.min(ry + rh, a.y + ah);
+        if (ix1 > ix0 && iy1 > iy0) { x0 = Math.min(x0, ix0); y0 = Math.min(y0, iy0); x1 = Math.max(x1, ix1); y1 = Math.max(y1, iy1); }
+      }
+    }
+    if (x0 > x1) return [rx, ry, rw, rh];
+    return [x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4];
   }
 
   // sumário automático do caderno ([[sumario]] numa caixa de texto)
@@ -776,7 +835,7 @@ export class Viewer {
         const x = +op.r.getAttribute('x'), y = +op.r.getAttribute('y'), w = +op.r.getAttribute('width'), hh = +op.r.getAttribute('height');
         if (w > 4 && hh > 4) {
           if (op.crop) this.app.cropDone(this, op.s, [x, y, w, hh], e.clientX, e.clientY);
-          else this.app.linkBuilder(this, { pageKey: op.s.p.key, rects: [[x, y, w, hh]], text: '' });
+          else this.app.linkBuilder(this, { pageKey: op.s.p.key, rects: [this.isNb ? this.contentBox(op.s, [x, y, w, hh]) : [x, y, w, hh]], text: '' });
         }
       } else if (op.type === 'note') {
         this.app.noteAt(this, op.s.p.key, op.x, op.y, e.clientX, e.clientY);
@@ -874,7 +933,42 @@ export class Viewer {
 
 function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n : p.kind === 'nb' ? (p.tpl === 'cover' ? 'Capa' : 'Página ' + p.n) : 'Página em branco'; }
 
-function isPenEraser(e) { return e.pointerType === 'pen' && (((e.buttons || 0) & 32) || ((e.buttons || 0) & 2) || e.button === 5 || e.button === 2); }
+// área com conteúdo (texto, figuras) de algumas páginas, em frações da página: [x, y, largura, altura]
+const cropCache = new Map();
+async function detectCrop(hd) {
+  const n = hd.pdf.numPages;
+  const pages = n <= 2 ? [1, n] : [2, 3, 4, 5, 6, 7].filter(p => p <= n);
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, got = 0;
+  for (const num of [...new Set(pages)]) {
+    try {
+      const pg = await getPageCached(hd, num);
+      const vp0 = pg.getViewport({ scale: 1 });
+      const k = 260 / vp0.width;
+      const vp = pg.getViewport({ scale: k });
+      const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: ctx, viewport: vp }).promise;
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let a = c.width, b = c.height, e = -1, f = -1;
+      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+        const i = (y * c.width + x) * 4;
+        if (d[i] + d[i + 1] + d[i + 2] < 600) { if (x < a) a = x; if (x > e) e = x; if (y < b) b = y; if (y > f) f = y; }
+      }
+      if (e < 0) continue;
+      x0 = Math.min(x0, a / c.width); x1 = Math.max(x1, (e + 1) / c.width); y0 = Math.min(y0, b / c.height); y1 = Math.max(y1, (f + 1) / c.height);
+      got++;
+    } catch (er) {}
+  }
+  if (!got) return [0, 0, 1, 1];
+  const px = 0.012, py = 0.01;
+  x0 = Math.max(0, x0 - px); y0 = Math.max(0, y0 - py); x1 = Math.min(1, x1 + px); y1 = Math.min(1, y1 + py);
+  if (x1 - x0 > 0.97 && y1 - y0 > 0.97) return [0, 0, 1, 1];
+  return [x0, y0, x1 - x0, y1 - y0];
+}
+function getPageCached(hd, n) { return getPage(hd, n); }
+
+function isPenEraser(e) { return e.pointerType === 'pen' && (((e.buttons || 0) & 32) || ((e.buttons || 0) & 2) || e.button === 5 || e.button === 2 || window.__penBtn === true); }
 export function pointInPoly(poly, px, py) {
   let c = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {

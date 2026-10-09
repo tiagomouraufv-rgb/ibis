@@ -183,6 +183,7 @@ async function localCommon() {
     projects: (await db.all('projects')).sort(byId),
     digest: { seq: dg.seq, items: dg.items.slice().sort(byId), exportedTags: dg.exportedTags || [] },
     tombs: await S.tombs(),
+    readLater: (await S.readLater()).slice().sort(byId),
   };
 }
 async function localDocBundle(doc) {
@@ -235,6 +236,17 @@ async function mergeCommon(data, changed) {
     const l = await db.get('projects', p.id);
     const m = mergeFields(l, p);
     if (stable(m) !== stable(l)) { await db.put('projects', m); changed.projects = true; }
+  }
+  // "ler depois": item a item, fica a edição mais recente
+  if (Array.isArray(data.readLater)) {
+    const ll = (await S.readLater()).slice();
+    let rch = false;
+    for (const it of data.readLater) {
+      if (!it || !it.id || dead(tombs, it.id, it.updated)) continue;
+      const k = ll.findIndex(x => x.id === it.id);
+      if (k < 0) { ll.push(it); rch = true; } else if ((it.updated || 0) > (ll[k].updated || 0)) { ll[k] = it; rch = true; }
+    }
+    if (rch) { await S.setReadLaterAll(ll); changed.readLater = true; }
   }
   // Digest: trecho a trecho, fica a edição mais recente
   const rd = data.digest || { items: [] };
@@ -308,6 +320,9 @@ async function applyTombs(changed) {
     const r = await db.get('recordings', id);
     if (r && (r.updated || 0) <= t) { await db.del('recordings', id); changed.recordings = true; }
   }
+  const rl = await S.readLater();
+  const rlKeep = rl.filter(it => !dead(tombs, it.id, it.updated));
+  if (rlKeep.length !== rl.length) await S.setReadLaterAll(rlKeep);
   const dg = await S.digest();
   const keep = dg.items.filter(it => !dead(tombs, it.id, it.updated));
   if (keep.length !== dg.items.length) { await S.saveDigest(Object.assign({}, dg, { items: keep }), { fromSync: true }); changed.digest = true; }

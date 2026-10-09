@@ -45,6 +45,7 @@ function embedsIn(s) {
     return y ? '\n<div class="yt" data-yt="' + y.id + '" data-t="' + y.t + '"></div>\n' : m;
   });
   s = s.replace(/^[ \t]*!\[([^\]\n]*)\]\(audio:([\w-]+)\)[ \t]*$/gm, (m, alt, id) => '\n<div class="aud" data-audio="' + id + '" data-title="' + escapeHtml(alt || 'Áudio') + '"></div>\n');
+  s = s.replace(/!\[([^\]|\n]*)\|(\d+)\]\(img:([\w-]+)\)/g, (m, alt, w, id) => '<img src="#img-' + id + '" alt="' + escapeHtml(alt) + '" width="' + w + '">');
   s = s.replace(/\]\(img:([\w-]+)\)/g, '](#img-$1)');
   s = s.replace(/\]\(leitor:\/\/([\w-]+)\/([\w-]*)(?:\?y=(\d+))?\)/g, (m, d, k, y) => '](#go=' + d + '~' + (k || '') + '~' + (y || 0) + ')');
   s = s.replace(/\]\(digest:([\w-]+)\)/g, '](#dg=$1)');

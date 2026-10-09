@@ -122,7 +122,7 @@ export async function resolveDest(hd, dest) {
     const ref = d[0];
     const idx = typeof ref === 'object' ? await hd.pdf.getPageIndex(ref) : (typeof ref === 'number' ? ref : 0);
     const n = idx + 1;
-    let y = 0;
+    let y = 0, x = null;
     const kind = d[1] && d[1].name;
     let top = null;
     if (kind === 'XYZ') top = d[3]; else if (kind === 'FitH' || kind === 'FitBH') top = d[2]; else if (kind === 'FitR') top = d[5];
@@ -130,9 +130,11 @@ export async function resolveDest(hd, dest) {
       const pg = await getPage(hd, n);
       const vp = pg.getViewport({ scale: 1 });
       const left = kind === 'XYZ' ? (d[2] || 0) : 0;
-      y = Math.max(0, vp.convertToViewportPoint(left, top)[1]);
+      const pt = vp.convertToViewportPoint(left, top);
+      y = Math.max(0, pt[1]);
+      if (kind === 'XYZ' && d[2] !== null && d[2] !== undefined) x = Math.max(0, pt[0]);
     }
-    return { n, y };
+    return { n, y, x };
   } catch (e) { return null; }
 }
 

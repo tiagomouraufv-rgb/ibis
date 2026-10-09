@@ -58,9 +58,10 @@ export function splitBlocks(md) {
 function openStructure(v) { return ((v.match(/```/g) || []).length % 2 === 1) || ((v.match(/\$\$/g) || []).length % 2 === 1); }
 
 export class TextScreen extends MdEditBase {
-  constructor(app) {
+  constructor(app, side = 0) {
     super();
     this.app = app;
+    this.sideIdx = side;
     this.cur = null; this.doc = null; this.blocks = [];
     this.hist = []; this.fut = [];
     this.idleHint = 'Toque no texto para editar (ou no fim da página para continuar escrevendo).';
@@ -73,7 +74,7 @@ export class TextScreen extends MdEditBase {
     });
     document.addEventListener('selectionchange', () => { clearTimeout(this.selT); this.selT = setTimeout(() => this.onSelection(), 250); });
     document.addEventListener('keydown', e => {
-      if (!this.root.isConnected || this.cur || e.target.closest('input, textarea')) return;
+      if (!this.root.isConnected || this.cur || e.target.closest('input, textarea') || (this.app.split && this.app.side !== this.sideIdx)) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); this.redo(); }
     });
@@ -99,7 +100,8 @@ export class TextScreen extends MdEditBase {
       btn('list', '', () => this.toggleSide(), { title: 'Painel lateral: sumário, ligações, busca', iconOnly: true }),
       h('div.rtitles', this.titleEl, this.infoEl),
       this.fmtSlot,
-      btn('swap', '', () => this.app.reader.recentMenu(null, this.doc && this.doc.id), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
+      btn('split', '', () => this.app.split ? this.app.exitSplit(this.sideIdx) : this.app.chooseSplit(this.doc), { title: 'Dividir a tela / fechar a divisão', iconOnly: true }),
+      btn('swap', '', () => this.app.reader.recentMenu(null, this.doc && this.doc.id, this.sideIdx), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
       btn('upload', 'Exportar', () => openTextExport(this.doc), { cls: 'pbtn' }),
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }));
     this.side = h('aside.side');
@@ -130,7 +132,7 @@ export class TextScreen extends MdEditBase {
     this.root.append(top, h('div.rbody', this.rail, this.side, this.pane, this.mathPal, this.right), this.selMenu);
     this.article.addEventListener('click', e => this.onClick(e));
     this.pane.addEventListener('scroll', () => { clearTimeout(this.scT); this.scT = setTimeout(() => this.savePos(), 500); }, { passive: true });
-    bindTwoFingerSwipe(this.pane, () => this.app.reader.quickSwitch(this.doc && this.doc.id), () => this.app.reader.recentMenu(null, this.doc && this.doc.id));
+    bindTwoFingerSwipe(this.pane, () => this.app.reader.quickSwitch(this.doc && this.doc.id, this.sideIdx), () => this.app.reader.recentMenu(null, this.doc && this.doc.id, this.sideIdx));
   }
 
   toolbar() {
@@ -141,7 +143,7 @@ export class TextScreen extends MdEditBase {
       h('span.fsep'),
       b('Concluir', 'Concluir a edição do bloco', () => this.commit(), '.done'));
   }
-  toggleMathPal() { this.mathPal.classList.toggle('open'); }
+  toggleMathPal() { this.mathPrefOpen = !this.mathPal.classList.contains('open'); this.mathPal.classList.toggle('open', this.mathPrefOpen); }
 
   // ---------- abrir ----------
   async open(doc, at) {
@@ -151,6 +153,7 @@ export class TextScreen extends MdEditBase {
     this.hist = []; this.fut = [];
     this.titleEl.textContent = S.docTitle(doc);
     this.right.classList.remove('open');
+    this.mathPal.classList.toggle('open', this.app.split ? !!this.mathPrefSplit : this.mathPrefOpen !== false);
     this.renderAll();
     doc.opened = Date.now();
     S.saveDoc(doc);
@@ -167,6 +170,7 @@ export class TextScreen extends MdEditBase {
   sourcesNow() { return this.blocks.map((md, i) => ({ id: i, md: this.cur && this.cur.i === i ? this.cur.ta.value : md })); }
 
   renderAll() {
+    this.imgDeselect && this.imgSel && this.imgDeselect();
     const srcs = this.sourcesNow();
     const num = numberAll(srcs);
     const all = headings(srcs.map(s => s.md).join('\n\n'));
@@ -259,6 +263,8 @@ export class TextScreen extends MdEditBase {
     if (!bl || bl.classList.contains('editing')) return;
     const i = +bl.dataset.i;
     if (e.target.closest('table.tedit')) { this.tableEditor(i); return; }
+    const img = e.target.closest('img.mdimg');
+    if (img) { this.imgSelect(i, img); return; }
     if (e.target.closest('a, button, iframe, audio, video, input, .ytbox, .audbox, nav.toc')) return;
     this.editBlock(i, this.caretFromPoint(i, e.clientX, e.clientY));
   }
@@ -305,7 +311,7 @@ export class TextScreen extends MdEditBase {
       const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(x => x.type.startsWith('image/'));
       if (!it) return;
       e.preventDefault();
-      try { const im = await NB.storeImage(it.getAsFile()); this.blockAt('![](img:' + im.fileId + ')@'); } catch (er) { toast(er.message); }
+      try { const im = await NB.storeImage(it.getAsFile()); this.blockAt('![](img:' + im.fileId + ')@'); this.commit(); this.selectImage(im.fileId); } catch (er) { toast(er.message); }
     });
     grow();
     ta.focus({ preventScroll: true });
@@ -400,7 +406,7 @@ export class TextScreen extends MdEditBase {
     const r = e.currentTarget.getBoundingClientRect();
     const put = async blob => {
       if (!blob) return;
-      try { const im = await NB.storeImage(blob); this.addBlock('![](img:' + im.fileId + ')'); }
+      try { const im = await NB.storeImage(blob); this.addBlock('![](img:' + im.fileId + ')'); if (!this.cur) this.selectImage(im.fileId); }
       catch (er) { toast(er.message); }
     };
     popMenu(r.left, r.bottom + 4, [
@@ -443,10 +449,68 @@ export class TextScreen extends MdEditBase {
   onLink(href) {
     if (/^#h-/.test(href)) { this.scrollToKey(href.slice(1), true); return; }
     const g = parseGo(href);
-    if (g) { if (g.docId === this.doc.id) this.scrollToKey(g.key || 'top', true); else this.app.openAt(g.docId, g.key, g.y); return; }
+    if (g) {
+      if (this.app.split) { this.app.openInOther(this.sideIdx, { docId: g.docId, pageKey: g.key || 'top', y: g.y }); return; }
+      if (g.docId === this.doc.id) this.scrollToKey(g.key || 'top', true); else this.app.openAt(g.docId, g.key, g.y);
+      return;
+    }
     if (/^#dg=/.test(href)) { this.app.showDigest(href.slice(4)); return; }
     if (/^#ob=/.test(href)) { openUri('obsidian://' + decodeURIComponent(href.slice(4))); return; }
     if (/^(https?:|mailto:)/i.test(href)) openExternal(href);
+  }
+
+  // ---------- tamanho das imagens: ![legenda|largura](img:ID) ----------
+  imgSelect(i, img) {
+    this.imgDeselect();
+    const id = img.dataset.file; if (!id) return;
+    const wrap = h('div.imgsel');
+    const place = () => {
+      const r = img.getBoundingClientRect(), a = this.article.getBoundingClientRect();
+      Object.assign(wrap.style, { left: (r.left - a.left) + 'px', top: (r.top - a.top) + 'px', width: r.width + 'px', height: r.height + 'px' });
+    };
+    const full = () => { const cs = getComputedStyle(this.article); return this.article.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); };
+    const set = w => { this.setImgWidth(i, id, Math.round(w)); };
+    const handle = h('div.imghandle', { title: 'Arraste para mudar o tamanho' });
+    handle.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      handle.setPointerCapture(e.pointerId);
+      const x0 = e.clientX, w0 = img.getBoundingClientRect().width;
+      const mv = ev => { img.style.width = Math.max(40, Math.min(full(), w0 + (ev.clientX - x0))) + 'px'; place(); };
+      const up = () => { handle.removeEventListener('pointermove', mv); handle.removeEventListener('pointerup', up); set(img.getBoundingClientRect().width); };
+      handle.addEventListener('pointermove', mv); handle.addEventListener('pointerup', up);
+    });
+    const bar = h('div.imgbar', [25, 50, 75, 100].map(p => h('button', { type: 'button', onclick: ev => { ev.stopPropagation(); set(full() * p / 100); } }, p + '%')),
+      h('button', { type: 'button', title: 'Tamanho original', onclick: ev => { ev.stopPropagation(); this.setImgWidth(i, id, 0); } }, 'Original'),
+      h('button.danger', { type: 'button', onclick: ev => { ev.stopPropagation(); this.snapshot(); this.blocks[i] = this.blocks[i].replace(new RegExp('!\\[[^\\]]*\\]\\(img:' + id + '\\)\\n?'), ''); if (!this.blocks[i].trim()) this.blocks.splice(i, 1); this.imgDeselect(); this.renderAll(); this.saveNow(); } }, 'Remover'));
+    wrap.append(handle, bar);
+    this.article.appendChild(wrap);
+    place();
+    this.imgSel = { wrap, i, id };
+    setTimeout(() => {
+      this.imgOff = ev => { if (!wrap.contains(ev.target) && ev.target !== img) this.imgDeselect(); };
+      document.addEventListener('pointerdown', this.imgOff, true);
+    }, 0);
+  }
+  imgDeselect() {
+    if (this.imgSel) { this.imgSel.wrap.remove(); this.imgSel = null; }
+    if (this.imgOff) { document.removeEventListener('pointerdown', this.imgOff, true); this.imgOff = null; }
+  }
+  setImgWidth(i, id, w) {
+    const re = new RegExp('!\\[([^\\]|]*)(?:\\|\\d+)?\\]\\(img:' + id + '\\)');
+    if (!re.test(this.blocks[i])) return;
+    this.snapshot();
+    this.blocks[i] = this.blocks[i].replace(re, (m, alt) => '![' + alt + (w ? '|' + w : '') + '](img:' + id + ')');
+    this.renderAll(); this.saveNow();
+    const img = this.article.querySelector(`.tblock[data-i="${i}"] img.mdimg[data-file="${id}"]`);
+    if (img) { const go = () => this.imgSelect(i, img); if (img.complete && img.naturalWidth) go(); else img.addEventListener('load', go, { once: true }); }
+  }
+  // depois de inserir/colar: já mostra o ajuste de tamanho
+  selectImage(id) {
+    const img = this.article.querySelector(`img.mdimg[data-file="${id}"]`);
+    if (!img) return;
+    const bl = img.closest('.tblock'); if (!bl) return;
+    const go = () => { img.scrollIntoView({ block: 'nearest' }); this.imgSelect(+bl.dataset.i, img); };
+    if (img.complete && img.naturalWidth) go(); else img.addEventListener('load', go, { once: true });
   }
 
   // ---------- tabela ----------
@@ -712,7 +776,7 @@ async function obsidianMd(doc, files, folder) {
     const ext = /png/.test(b.type) ? 'png' : /jpe?g/.test(b.type) ? 'jpg' : /gif/.test(b.type) ? 'gif' : /webp/.test(b.type) ? 'webp' : /mp4/.test(b.type) ? 'm4a' : /ogg/.test(b.type) ? 'ogg' : 'webm';
     const fn = name + '-' + id + '.' + ext;
     if (files) files[folder + '/Anexos/' + fn] = new Uint8Array(await b.arrayBuffer());
-    md = md.replace(new RegExp('!\\[[^\\]]*\\]\\((?:img|audio):' + id + '\\)', 'g'), '![[' + fn + ']]');
+    md = md.replace(new RegExp('!\\[([^\\]]*)\\]\\((?:img|audio):' + id + '\\)', 'g'), (m, alt) => { const w = (alt.match(/\|(\d+)$/) || [])[1]; return '![[' + fn + (w ? '|' + w : '') + ']]'; });
   }
   md = md.replace(/\[([^\]]*)\]\(leitor:\/\/([\w-]+)\/([\w-]*)[^)]*\)/g, (m, t, id, key) => { const d = docs.find(x => x.id === id); return t + (d ? ' (→ ' + S.docTitle(d) + (key ? ', ' + pageLabel(key, d) : '') + ')' : ''); });
   md = md.replace(/\[([^\]]*)\]\(digest:[\w-]+\)/g, '$1');
@@ -743,17 +807,17 @@ export async function textPdf(doc) {
   const tocHtml = '<p><b>Sumário</b></p><ul>' + hs.map(x => '<li style="margin-left:' + (x.level - 1) * 14 + 'px;list-style:none">' + x.text.replace(/</g, '&lt;') + '</li>').join('') + '</ul>';
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i].trim();
-    const im = b.match(/^!\[[^\]]*\]\(img:([\w-]+)\)$/);
+    const im = b.match(/^!\[[^\]]*?(?:\|(\d+))?\]\(img:([\w-]+)\)$/);
     const au = b.match(/^!\[([^\]]*)\]\(audio:([\w-]+)\)$/);
     const yt = youtubeId(b) && !/\s/.test(b) ? youtubeId(b) : null;
     try {
       if (im) {
-        const blob = await S.audioBlob(im[1]); if (!blob) continue;
+        const blob = await S.audioBlob(im[2]); if (!blob) continue;
         let bytes = new Uint8Array(await blob.arrayBuffer()); let img;
         if (/png/.test(blob.type)) img = await pdf.embedPng(bytes);
         else if (/jpe?g/.test(blob.type)) img = await pdf.embedJpg(bytes);
         else { const u = URL.createObjectURL(blob); const el = await new Promise((res, rej) => { const x = new Image(); x.onload = () => res(x); x.onerror = rej; x.src = u; }); const c = document.createElement('canvas'); c.width = el.naturalWidth; c.height = el.naturalHeight; c.getContext('2d').drawImage(el, 0, 0); URL.revokeObjectURL(u); bytes = new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer()); img = await pdf.embedPng(bytes); }
-        let w = Math.min(CW, img.width * 0.75), hh = w * img.height / img.width;
+        let w = Math.min(CW, im[1] ? +im[1] * 0.75 : img.width * 0.75), hh = w * img.height / img.width;
         if (hh > H - 2 * M) { hh = H - 2 * M; w = hh * img.width / img.height; }
         need(hh + 10);
         page.drawImage(img, { x: M + (CW - w) / 2, y: H - y - hh, width: w, height: hh });

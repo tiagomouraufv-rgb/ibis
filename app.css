@@ -435,8 +435,9 @@ nav.toc a { text-decoration: none; color: #1D5A8A; } .toclvl2 { padding-left: 1.
 .tablepick { padding: 10px; }
 .tpinfo { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .tpgrid { display: grid; grid-template-columns: repeat(8, 26px); gap: 3px; }
-.tpcell { width: 26px; height: 26px; border: 1px solid var(--line2); background: var(--panel); border-radius: 4px; padding: 0; }
-.tpcell.on { background: var(--accent-soft); border-color: var(--accent); }
+.tpcell { width: 26px; height: 26px; border: 1.5px solid #8A939D; background: #E9EDF1; border-radius: 4px; padding: 0; }
+.tpcell.on { background: #1D5A8A; border-color: #123F63; }
+.tptyped { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 13px; } .tptyped input { width: 52px; padding: 5px 6px; border: 1px solid var(--line2); border-radius: 6px; font: inherit; background: var(--panel); color: var(--ink); }
 .tescroll { overflow-x: auto; max-height: 60vh; }
 .tegrid { display: grid; gap: 4px; align-items: center; }
 .tegrid input { min-width: 0; padding: 7px 8px; border: 1px solid var(--line2); border-radius: 6px; font: inherit; background: var(--panel); color: var(--ink); }
@@ -449,3 +450,65 @@ nav.toc a { text-decoration: none; color: #1D5A8A; } .toclvl2 { padding-left: 1.
 .txt-b { font-size: 7.5px; line-height: 1.45; color: #4A5058; }
 @media (max-width: 760px) { .tdoc { padding: 26px 18px; font-size: 16px; } .tdpane { padding: 10px 6px 100px; } }
 .textdoc .fmtslot .fmt { min-width: 34px; padding: 0 6px; }
+
+.aicost { margin-top: 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; }
+.pricebox { margin-top: 14px; } .pricetab { border-collapse: collapse; width: 100%; font-size: 13px; } .pricetab th, .pricetab td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; } .pricetab th { color: var(--muted); font-weight: 600; }
+.trtext.plain { white-space: pre-wrap; line-height: 1.5; }
+
+/* biblioteca: botões de criar juntos */
+.newgroup { display: flex; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.12); border: 1px solid #123F63; }
+.newgroup .ng { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border: none; background: var(--accent); color: #fff; font-weight: 500; font-size: 14px; }
+.newgroup .ng + .ng { border-left: 1px solid rgba(255,255,255,.28); background: #24679C; }
+.newgroup .ng:active { filter: brightness(.92); }
+.lsearch { margin: -6px 0 18px; } .lsearch .searchbox { width: 100%; max-width: none; }
+@media (max-width: 700px) { .newgroup .ng span { display: none; } }
+.nblinkline { stroke: #1D5A8A; stroke-width: 1.3; vector-effect: non-scaling-stroke; }
+.nblinkdot { fill: #1D5A8A; }
+
+.tdoc { position: relative; }
+.imgsel { position: absolute; outline: 2px solid #1D5A8A; border-radius: 4px; pointer-events: none; z-index: 4; }
+.imghandle { position: absolute; right: -10px; bottom: -10px; width: 22px; height: 22px; border-radius: 6px; background: #1D5A8A; border: 2px solid #fff; pointer-events: auto; cursor: nwse-resize; touch-action: none; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+.imgbar { position: absolute; left: 0; top: -44px; display: flex; gap: 2px; background: #16191D; border-radius: 10px; padding: 4px; pointer-events: auto; font-family: var(--font); }
+.imgbar button { border: none; background: transparent; color: #fff; padding: 6px 9px; border-radius: 7px; font-size: 13px; }
+.imgbar button.danger { color: #FF9AA0; }
+
+.seclist { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px; }
+.secrow { display: flex; gap: 8px; align-items: center; padding: 5px 0; } .secrow.lv2 { padding-left: 16px; }
+.secstat { display: flex; gap: 10px; padding: 3px 0; font-size: 14px; border-bottom: 1px solid var(--line); }
+.secout { max-height: 50vh; overflow-y: auto; margin-top: 10px; padding: 18px 22px; font-size: 15px; box-shadow: none; border: 1px solid var(--line); }
+.lookpop.ref { width: min(520px, calc(100vw - 16px)); }
+.reftitle { font-family: var(--serif); font-size: 17px; font-weight: 600; line-height: 1.3; margin-bottom: 4px; }
+.refauth { font-size: 13px; color: var(--ink); margin-bottom: 2px; }
+.refmeta { font-size: 12px; color: var(--muted); margin-bottom: 8px; } .refcites { color: #2E7D4F; font-weight: 500; }
+.refabs { font-family: var(--serif); font-size: 14px; line-height: 1.5; max-height: 38vh; overflow-y: auto; padding: 8px 10px; background: var(--soft); border-radius: 8px; }
+
+.ptabs { margin: 4px 0 14px; }
+.pdigest { display: flex; flex-direction: column; gap: 10px; }
+.rlwrap { overflow-x: auto; }
+.rltab { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--panel); border-radius: 10px; overflow: hidden; }
+.rltab th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--soft); }
+.rltab td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.rltab td.num { color: var(--muted); width: 28px; } .rltab td.acts { white-space: nowrap; width: 100px; }
+.rlt { font-family: var(--serif); font-weight: 600; line-height: 1.3; }
+.rltab tr.done .rlt { text-decoration: line-through; color: var(--muted); }
+.rlabs { font-family: var(--serif); font-size: 13px; line-height: 1.45; max-width: 46ch; margin-top: 6px; }
+.small { font-size: 12px; }
+.slotclip { display: block; }
+
+/* ---------- tela dividida ---------- */
+.splitroot { flex: 1; display: flex; min-width: 0; }
+.sideslot { flex: 1 1 0; min-width: 0; display: flex; position: relative; }
+.sideslot > * { flex: 1; min-width: 0; }
+.splitbar { width: 5px; flex: none; background: var(--line2); }
+.sideslot.activeside > .reader > .rtop { box-shadow: inset 0 -3px 0 var(--accent); }
+.splitroot .rtop { gap: 2px; padding: 0 4px; }
+.splitroot .rtop .pbtn span, .splitroot .rtop .sbtn span, .splitroot .hide-sm { display: none; }
+.splitroot .rtop .pbtn { padding: 0 10px; }
+.splitroot .rtitles { max-width: 26%; }
+.splitroot .reader:not(.textbar) .rtop button[aria-label="Buscar no PDF"], .splitroot .rtop .recbtn { display: none; }
+.splitroot .rail { width: 52px; } .splitroot .rail .tool { width: 42px; height: 42px; }
+.splitroot .penhint { display: none; }
+.splitroot .side.open { width: 260px; }
+.splitroot .textdoc .mathpal.open { position: absolute; right: 0; top: 56px; bottom: 0; z-index: 30; box-shadow: -6px 0 18px rgba(0,0,0,.18); }
+.splitroot .tdoc { padding: 28px 26px; }
+.splitroot .fmtslot .fmt { min-width: 30px; padding: 0 4px; }
