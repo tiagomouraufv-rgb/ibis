@@ -13,25 +13,121 @@ export function isNotebook(doc) { return doc && doc.kind === 'notebook'; }
 
 export function newPage(tpl = 'lined', w = A4.w, h = A4.h) { return { id: uid(''), tpl, w, h }; }
 
-export async function createNotebook(name, tpl = 'lined') {
+// cores da capa (estilo caderno de capa marmorizada, tipo "composition book")
+export const COVER_COLORS = [['#1b1b1d', 'Preto'], ['#1f3f7a', 'Azul'], ['#8e1f24', 'Vermelho'], ['#1f5a3a', 'Verde'], ['#4b2a6b', 'Roxo'], ['#6b4226', 'Marrom'], ['#a87a12', 'Mostarda'], ['#4a5058', 'Cinza']];
+export function coverPage() { const p = newPage('cover'); return p; }
+
+export async function createNotebook(name, tpl = 'lined', coverColor = '#1b1b1d') {
+  const pages = coverColor ? [coverPage(), newPage(tpl)] : [newPage(tpl)];
   const doc = {
     id: uid('d'), kind: 'notebook', name: name || 'Caderno', added: Date.now(), opened: 0,
     lastKey: '', lastY: 0, meta: {}, projects: [], bookmarks: [], blanks: [], margins: {}, briefing: '',
-    pages: [newPage(tpl)], tpl,
+    pages, tpl, coverColor: coverColor || '',
   };
-  doc.lastKey = 'n' + doc.pages[0].id;
+  doc.lastKey = 'n' + doc.pages[doc.pages.length - 1].id;
   await S.saveDoc(doc);
   return doc;
 }
 
 // lista de páginas no formato do visualizador
 export function nbPageList(doc) {
-  return (doc.pages || []).map((p, i) => ({ key: 'n' + p.id, kind: 'nb', id: p.id, tpl: p.tpl, w: p.w, h: p.h, index: i, n: i + 1, label: String(i + 1) }));
+  let n = 0;
+  return (doc.pages || []).map((p, i) => {
+    const cover = p.tpl === 'cover';
+    if (!cover) n++;
+    return { key: 'n' + p.id, kind: 'nb', id: p.id, tpl: p.tpl, w: p.w, h: p.h, index: i, n: cover ? 0 : n, label: cover ? 'Capa' : String(n) };
+  });
+}
+export function nbPageLabel(doc, key) {
+  const p = nbPageList(doc).find(x => x.key === key);
+  return p ? (p.n ? 'p. ' + p.n : 'capa') : 'página do caderno';
+}
+
+// muda a cor da capa; se o caderno não tem capa, cria uma no começo
+export async function setCover(doc, color) {
+  if (!color) {
+    const i = doc.pages.findIndex(p => p.tpl === 'cover');
+    if (i >= 0) { await deletePage(doc, i); }
+    doc.coverColor = '';
+    await S.saveDoc(doc);
+    return;
+  }
+  doc.coverColor = color;
+  if (!doc.pages.some(p => p.tpl === 'cover')) doc.pages.unshift(coverPage());
+  await S.saveDoc(doc);
+}
+
+// ---------- desenho da capa ----------
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function seedOf(s) { let x = 7; for (const c of String(s)) x = (Math.imul(x, 31) + c.charCodeAt(0)) | 0; return x; }
+function mix(hex, to, k) {
+  const a = parseInt(hex.slice(1), 16), b = parseInt(to.slice(1), 16);
+  const ch = sh => Math.round(((a >> sh) & 255) * (1 - k) + ((b >> sh) & 255) * k);
+  return 'rgb(' + ch(16) + ',' + ch(8) + ',' + ch(0) + ')';
+}
+export function drawCover(ctx, p, doc) {
+  const col = (doc && doc.coverColor) || '#1b1b1d';
+  const R = mulberry(seedOf((doc && doc.id) || 'x'));
+  const W = p.w, H = p.h;
+  ctx.save();
+  ctx.fillStyle = col; ctx.fillRect(0, 0, W, H);
+  // marmorizado: manchas claras irregulares e, por cima, rachaduras na cor da capa
+  const flake = (x, y, r, fill) => {
+    const n = 5 + Math.floor(R() * 4); const rot = R() * 6.28;
+    ctx.beginPath();
+    for (let k = 0; k < n; k++) { const ang = rot + k * 6.283 / n; const rr = r * (0.45 + R() * 0.8); const px = x + Math.cos(ang) * rr, py = y + Math.sin(ang) * rr; k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+    ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  };
+  const light = mix(col, '#ffffff', 0.9), light2 = mix(col, '#ffffff', 0.6);
+  for (let i = 0; i < 5200; i++) flake(R() * W, R() * H, 0.9 + Math.pow(R(), 2.6) * 6.5, i % 4 ? light : light2);
+  for (let i = 0; i < 4200; i++) flake(R() * W, R() * H, 0.5 + Math.pow(R(), 2.2) * 3.2, col);
+  for (let i = 0; i < 1800; i++) flake(R() * W, R() * H, 0.4 + R() * 1.3, light);
+  // lombada
+  const sw = W * 0.095;
+  ctx.fillStyle = mix(col, '#000000', 0.45); ctx.fillRect(0, 0, sw, H);
+  ctx.globalAlpha = 0.12; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 0.5;
+  for (let y = 2; y < H; y += 3) { ctx.beginPath(); ctx.moveTo(0, y + R()); ctx.lineTo(sw, y + R()); ctx.stroke(); }
+  ctx.globalAlpha = 1; ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(sw, 0, 1.2, H);
+  // etiqueta
+  const lx = W * 0.27, ly = H * 0.12, lw = W * 0.58, lh = H * 0.17, rad = 12;
+  const rr = (x, y, w, hh, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + hh, r); ctx.arcTo(x + w, y + hh, x, y + hh, r); ctx.arcTo(x, y + hh, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
+  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 1.5;
+  rr(lx, ly, lw, lh, rad); ctx.fillStyle = '#fbfaf6'; ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 1.4; ctx.strokeStyle = '#2a2a2a'; ctx.stroke();
+  rr(lx + 5, ly + 5, lw - 10, lh - 10, rad - 4); ctx.lineWidth = 0.6; ctx.stroke();
+  ctx.fillStyle = '#4a4a4a'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.font = '600 8.5px "IBM Plex Sans", Arial, sans-serif';
+  ctx.fillText('C A D E R N O', lx + lw / 2, ly + 22);
+  ctx.strokeStyle = '#9a9a9a'; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(lx + 18, ly + 28); ctx.lineTo(lx + lw - 18, ly + 28); ctx.stroke();
+  // título: até 3 linhas, o maior tamanho que couber
+  const title = (doc && doc.name) || 'Caderno';
+  let size = 26, lines = [];
+  const wrap = sz => { ctx.font = '600 ' + sz + 'px "Source Serif 4", Georgia, serif'; const out = []; let cur = ''; for (const w of title.split(/\s+/)) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > lw - 36 && cur) { out.push(cur); cur = w; } else cur = t; } if (cur) out.push(cur); return out; };
+  for (; size >= 11; size -= 1) { lines = wrap(size); if (lines.length <= 3 && lines.every(l => ctx.measureText(l).width <= lw - 36) && lines.length * size * 1.15 <= lh - 52) break; }
+  ctx.fillStyle = '#16191D';
+  const y0 = ly + 28 + (lh - 28 - 22 - lines.length * size * 1.15) / 2 + size;
+  lines.forEach((l, i) => ctx.fillText(l, lx + lw / 2, y0 + i * size * 1.15, lw - 30));
+  ctx.beginPath(); ctx.moveTo(lx + 18, ly + lh - 20); ctx.lineTo(lx + lw - 18, ly + lh - 20); ctx.stroke();
+  ctx.font = '8px "IBM Plex Sans", Arial, sans-serif'; ctx.fillStyle = '#6a6a6a';
+  ctx.fillText(new Date((doc && doc.added) || Date.now()).toLocaleDateString('pt-BR'), lx + lw / 2, ly + lh - 9);
+  ctx.restore();
+}
+const coverCache = new Map();
+export function coverUrl(doc, p, k = 1.6) {
+  const key = [doc.id, doc.coverColor, doc.name, p.w, p.h, k].join('|');
+  if (coverCache.has(key)) return coverCache.get(key);
+  const c = document.createElement('canvas'); c.width = Math.round(p.w * k); c.height = Math.round(p.h * k);
+  const ctx = c.getContext('2d'); ctx.scale(k, k); drawCover(ctx, p, doc);
+  const u = c.toDataURL('image/jpeg', 0.88);
+  coverCache.set(key, u);
+  return u;
 }
 
 export async function addPage(doc, index, tpl) {
   const ref = doc.pages[Math.max(0, Math.min(doc.pages.length - 1, index))] || {};
-  const p = newPage(tpl || ref.tpl || doc.tpl || 'lined', ref.w || A4.w, ref.h || A4.h);
+  const p = newPage(tpl || (ref.tpl !== 'cover' && ref.tpl) || doc.tpl || 'lined', ref.w || A4.w, ref.h || A4.h);
   doc.pages.splice(index + 1, 0, p);
   await S.saveDoc(doc);
   return p;
@@ -154,9 +250,11 @@ export function renderBoxHtml(a, num) {
 
 // Editor de texto dentro da página (Markdown + LaTeX), com barra de formatação
 export class TextEditor {
-  constructor(reader) { this.reader = reader; this.cur = null; }
+  constructor(reader) { this.reader = reader; this.cur = null; this._bar = null; }
 
   get active() { return !!this.cur; }
+  // barra de formatação: fica no topo da tela, ao lado do título, enquanto a ferramenta Texto está ativa
+  get bar() { if (!this._bar) this._bar = this.toolbar(); return this._bar; }
 
   open(v, a, el) {
     if (this.cur) this.close();
@@ -166,9 +264,15 @@ export class TextEditor {
     const wrap = h('div.tbox-editwrap', ta, prev);
     el.classList.add('editing');
     clear(el); el.appendChild(wrap);
-    const bar = this.toolbar(ta, prev);
-    document.body.appendChild(bar);
+    const bar = this.bar;
+    // alças para mudar a largura da caixa (arraste as bordas)
+    for (const side of ['l', 'r']) {
+      const hd = h('div.tbox-handle.' + side, { title: 'Arraste para mudar a largura' });
+      hd.addEventListener('pointerdown', e => this.dragWidth(e, side));
+      el.appendChild(hd);
+    }
     this.cur = { v, a, el, ta, prev, bar, showPrev: false };
+    this.reader.showTextBar && this.reader.showTextBar();
     const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.max(ta.scrollHeight, 40) + 'px'; };
     ta.addEventListener('input', () => { grow(); if (this.cur && this.cur.showPrev) this.updatePrev(); });
     ta.addEventListener('keydown', e => {
@@ -189,7 +293,7 @@ export class TextEditor {
     });
     this.outside = e => {
       if (!this.cur) return;
-      if (wrap.contains(e.target) || bar.contains(e.target) || (e.target.closest && e.target.closest('.popmenu, .modal-back, .tbox-handle'))) return;
+      if (wrap.contains(e.target) || bar.contains(e.target) || (e.target.closest && e.target.closest('.popmenu, .modal-back, .tbox-handle, .mathpal, .rtop'))) return;
       this.close();
     };
     setTimeout(() => document.addEventListener('pointerdown', this.outside, true), 0);
@@ -197,9 +301,15 @@ export class TextEditor {
     setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
   }
 
-  toolbar(ta, prev) {
-    const b = (label, title, fn, cls = '') => h('button.fmt' + cls, { type: 'button', title, 'aria-label': title, onpointerdown: e => e.preventDefault(), onclick: fn }, label);
+  toolbar() {
+    const b = (label, title, fn, cls = '') => h('button.fmt' + cls, { type: 'button', title, 'aria-label': title, onpointerdown: e => e.preventDefault(), onclick: e => {
+      if (!this.cur && !/toggle/.test(cls)) { toast('Toque na página (ferramenta Texto) para criar ou editar uma caixa.'); return; }
+      fn(e);
+    } }, label);
     return h('div.fmtbar', { role: 'toolbar', 'aria-label': 'Formatação' },
+      b('½', 'Caixa com metade da largura da página', () => this.setWidth('half')),
+      b('↔', 'Caixa com a largura toda da página', () => this.setWidth('full')),
+      h('span.fsep'),
       b('H1', 'Título 1', () => this.linePrefix('# ')),
       b('H2', 'Título 2', () => this.linePrefix('## ')),
       b('H3', 'Título 3', () => this.linePrefix('### ')),
@@ -218,8 +328,57 @@ export class TextEditor {
       b('(n)', 'Equação numerada (\\eqn)', () => this.block('$$\n', '\n\\eqn\n$$')),
       b('ref', 'Citar equação numerada (\\eqref)', e => this.refMenu(e)),
       h('span.fsep'),
+      b('Σ', 'Mostrar/esconder os símbolos de matemática', () => this.reader.toggleMathPal && this.reader.toggleMathPal(), '.toggle'),
       b('Prévia', 'Mostrar como fica enquanto digita', () => this.togglePrev()),
       b('Concluir', 'Concluir edição', () => this.close(), '.done'));
+  }
+
+  // largura da caixa: metade ou página inteira (margens de 36 pt)
+  setWidth(mode) {
+    const { v, a, el } = this.cur;
+    const p = v.pages.find(q => q.key === a.pageKey); if (!p) return;
+    const M = 36, full = p.w - 2 * M;
+    if (mode === 'full') { a.x = M; a.w = full; }
+    else { a.w = Math.round(full / 2); if (a.x + a.w > p.w - M) a.x = Math.max(M, p.w - M - a.w); }
+    this.applyBox();
+    this.cur.ta.focus();
+  }
+  applyBox() {
+    const { a, el } = this.cur;
+    el.style.left = `calc(var(--s) * ${a.x}px)`; el.style.width = `calc(var(--s) * ${a.w}px)`;
+  }
+  dragWidth(e, side) {
+    if (!this.cur) return;
+    e.preventDefault(); e.stopPropagation();
+    const { v, a } = this.cur;
+    const p = v.pages.find(q => q.key === a.pageKey);
+    const t = e.currentTarget;
+    try { t.setPointerCapture(e.pointerId); } catch (er) {}
+    const x0 = a.x, w0 = a.w, cx = e.clientX;
+    const mv = ev => {
+      const d = (ev.clientX - cx) / v.scale;
+      if (side === 'r') a.w = Math.max(60, Math.min(p.w - a.x - 2, w0 + d));
+      else { const nx = Math.max(2, Math.min(x0 + w0 - 60, x0 + d)); a.w = w0 - (nx - x0); a.x = nx; }
+      this.applyBox();
+    };
+    const up = () => { t.removeEventListener('pointermove', mv); t.removeEventListener('pointerup', up); t.removeEventListener('pointercancel', up); if (this.cur) this.cur.ta.focus(); };
+    t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
+  }
+
+  // símbolo do painel de matemática: '@' marca onde fica o cursor; fora de uma equação, entra entre $…$
+  insertMath(code) {
+    if (!this.cur) { toast('Toque numa caixa de texto (ferramenta Texto) para inserir o símbolo.'); return; }
+    const ta = this.cur.ta; const s = ta.selectionStart, e = ta.selectionEnd;
+    let t = code;
+    const sel = ta.value.slice(s, e);
+    if (sel && t.includes('@')) t = t.replace('@', sel + '@');
+    if (!t.includes('@') && /\\[A-Za-z]+$/.test(t)) t += ' ';
+    if (!inMathAt(ta.value, s)) t = t.includes('@') ? '$' + t + '$' : '$' + t.trimEnd() + '$@';
+    const caret = t.indexOf('@');
+    t = t.replace('@', '');
+    ta.setRangeText(t, s, e, 'end');
+    if (caret >= 0) ta.setSelectionRange(s + caret, s + caret);
+    ta.dispatchEvent(new Event('input')); ta.focus();
   }
 
   wrapSel(a, z) {
@@ -269,13 +428,25 @@ export class TextEditor {
     const c = this.cur; if (!c) return;
     this.cur = null;
     document.removeEventListener('pointerdown', this.outside, true);
-    c.bar.remove();
     c.el.classList.remove('editing');
+    c.el.querySelectorAll('.tbox-handle').forEach(x => x.remove());
+    this.reader.showTextBar && this.reader.showTextBar();
     const md = c.ta.value.replace(/\s+$/, '');
     if (!md.trim()) { if (c.a.id && (await S.annots(c.a.docId)).some(x => x.id === c.a.id)) await S.delAnnot(c.a); else c.v.redrawOverlays(c.a.pageKey); return; }
     c.a.md = md;
     await S.putAnnot(c.a);
   }
+}
+
+// o cursor está dentro de uma equação ($…$ ou $$…$$)?
+export function inMathAt(text, pos) {
+  const before = text.slice(0, pos).replace(/\\\$/g, '');
+  const dd = (before.match(/\$\$/g) || []).length;
+  if (dd % 2 === 1) return true;
+  const last = before.lastIndexOf('$$');
+  const rest = (last >= 0 ? before.slice(last + 2) : before);
+  const para = rest.split(/\n\s*\n/).pop();
+  return ((para.match(/\$/g) || []).length % 2) === 1;
 }
 
 export function onTaskClick(a, idx) { a.md = toggleTask(a.md || '', idx); return S.putAnnot(a); }
@@ -300,7 +471,7 @@ export async function rasterPage(doc, page, anns, opts = {}) {
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.scale(k, k); ctx.translate(-bb[0], -bb[1]);
-  if (opts.template) drawTemplate(ctx, page);
+  if (opts.template) { if (page.tpl === 'cover') drawCover(ctx, page, doc); else drawTemplate(ctx, page); }
   for (const a of items.filter(x => x.kind === 'img')) {
     try { const img = await loadImg(await fileUrl(a.fileId)); ctx.drawImage(img, a.x, a.y, a.w, a.h); } catch (e) {}
   }
@@ -388,6 +559,9 @@ export async function notebookPdf(doc) {
   for (const p of doc.pages) {
     const page = pdf.addPage([p.w, p.h]);
     const H = p.h;
+    if (p.tpl === 'cover') {
+      try { const u = coverUrl(doc, p, 2.2); const im = await pdf.embedJpg(Uint8Array.from(atob(u.split(',')[1]), ch => ch.charCodeAt(0))); page.drawImage(im, { x: 0, y: 0, width: p.w, height: p.h }); } catch (e) { console.warn('capa', e); }
+    }
     // modelo
     const line = (x1, y1, x2, y2) => page.drawLine({ start: { x: x1, y: H - y1 }, end: { x: x2, y: H - y2 }, thickness: 0.5, color: rgb(0.84, 0.86, 0.88) });
     if (p.tpl === 'lined' || p.tpl === 'cornell') for (let y = 72; y < p.h - 30; y += 24) line(p.tpl === 'cornell' ? 0 : 36, y, p.w - 36, y);
@@ -445,7 +619,8 @@ export async function notebookObsidianFiles(doc, folder = 'Cadernos') {
   for (let i = 0; i < doc.pages.length; i++) {
     const p = doc.pages[i];
     const mine = anns.filter(a => a.pageKey === 'n' + p.id);
-    if (doc.pages.length > 1) lines.push('## Página ' + (i + 1), '');
+    if (p.tpl === 'cover' && !mine.length) continue;
+    if (doc.pages.length > 1) lines.push('## ' + (p.tpl === 'cover' ? 'Capa' : 'Página ' + nbPageList(doc)[i].n), '');
     for (const a of readingOrder(doc, mine.filter(x => x.kind === 'tbox' || x.kind === 'img' || x.kind === 'note'))) {
       if (a.kind === 'tbox') lines.push(markdownForObsidian(a.md || '', num.starts[a.id] || 0, num.labels), '');
       else if (a.kind === 'img') {

@@ -47,6 +47,7 @@ async function tx(store, mode, fn) {
 
 export const db = {
   async get(store, key) { const d = await open(); return req(d.transaction(store).objectStore(store).get(key)); },
+  async keys(store) { const d = await open(); return req(d.transaction(store).objectStore(store).getAllKeys()); },
   async all(store) { const d = await open(); return req(d.transaction(store).objectStore(store).getAll()); },
   async byIndex(store, index, value) { const d = await open(); return req(d.transaction(store).objectStore(store).index(index).getAll(value)); },
   put(store, value) { return tx(store, 'readwrite', s => { s.put(value); }); },

@@ -9,6 +9,7 @@ import { downloadBlob } from './util.js';
 import * as NB from './notebook.js';
 import { plainText } from './md.js';
 import { openNotebookExport } from './dialogs.js';
+import * as SY from './sync.js';
 
 export class Library {
   constructor(app) {
@@ -18,6 +19,24 @@ export class Library {
     this.q = '';
     S.on('docs', () => { if (this.root.isConnected && !this.busy) this.renderMain(); });
     S.on('projects', () => { if (this.root.isConnected) this.render(); });
+    S.on('sync', () => this.paintSync());
+  }
+
+  paintSync() {
+    const b = this.syncBtn; if (!b) return;
+    const st = SY.syncStatus();
+    const label = { off: 'Sincronizar (desligada)', idle: 'Sincronizado', busy: 'Sincronizando…', error: 'Erro na sincronização', login: 'Toque para sincronizar' }[st.state] || 'Sincronizar';
+    clear(b);
+    b.dataset.state = st.state;
+    b.title = st.msg || (st.last ? 'Última: ' + new Date(st.last).toLocaleString('pt-BR') : '');
+    b.append(icon('sync', 20), h('span.grow', label));
+  }
+
+  async syncClick() {
+    const st = SY.syncStatus();
+    if (st.state === 'off') return openSettings('sync');
+    try { const r = await SY.syncNow({ interactive: true }); if (r && !r.skipped) toast('Sincronizado.'); }
+    catch (e) { toast(e.message, 6000); if (e.code === 'noclient') openSettings('sync'); }
   }
 
   async render() {
@@ -38,7 +57,9 @@ export class Library {
       item('gravacoes', 'mic', 'Gravações'),
       h('div.navhead', h('span', 'PROJETOS'), btn('plus', '', async () => { const name = await promptBox('Novo projeto', 'Nome do projeto', '', 'Criar'); if (name && name.trim()) { const p = await S.saveProject({ name: name.trim() }); this.view = 'projeto:' + p.id; this.render(); } }, { iconOnly: true, title: 'Novo projeto', cls: 'ibtn small' })));
     for (const p of await S.projects()) n.appendChild(item('projeto:' + p.id, 'folder', p.name));
-    n.append(h('div.grow'), h('button.navitem', { type: 'button', onclick: () => openSettings() }, icon('gear', 20), h('span.grow', 'Configurações')));
+    this.syncBtn = h('button.navitem.syncitem', { type: 'button', onclick: () => this.syncClick() });
+    this.paintSync();
+    n.append(h('div.grow'), this.syncBtn, h('button.navitem', { type: 'button', onclick: () => openSettings() }, icon('gear', 20), h('span.grow', 'Configurações')));
   }
 
   async renderMain() {
@@ -109,15 +130,25 @@ export class Library {
   async newNotebook() {
     const { modal } = await import('./util.js');
     const name = h('input', { type: 'text', value: 'Caderno ' + new Date().toLocaleDateString('pt-BR') });
-    let tpl = 'lined';
+    let tpl = 'lined', color = NB.COVER_COLORS[0][0];
     const tpls = h('div.chips');
-    const render = () => { clear(tpls); for (const [id, l] of NB.TEMPLATES) tpls.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(tpl === id), onclick: () => { tpl = id; render(); } }, l)); };
+    const cols = h('div.chips');
+    const prev = h('img.coverprev', { alt: 'Prévia da capa' });
+    const paintPrev = () => { if (!color) { prev.style.visibility = 'hidden'; return; } prev.style.visibility = ''; prev.src = NB.coverUrl({ id: 'previa', name: name.value || 'Caderno', coverColor: color, added: Date.now() }, { w: 595.28, h: 841.89 }, 0.5); };
+    const render = () => {
+      clear(tpls); for (const [id, l] of NB.TEMPLATES) tpls.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(tpl === id), onclick: () => { tpl = id; render(); } }, l));
+      clear(cols);
+      for (const [c, l] of NB.COVER_COLORS) cols.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(color === c), onclick: () => { color = c; render(); } }, h('span.swatch', { style: { background: c } }), l));
+      cols.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(!color), onclick: () => { color = ''; render(); } }, 'Sem capa'));
+      paintPrev();
+    };
+    name.addEventListener('input', paintPrev);
     render();
-    modal('Novo caderno', h('div', h('label.field', h('span', 'Nome'), name), h('div.flabel', 'MODELO DAS PÁGINAS'), tpls), [
+    modal('Novo caderno', h('div.newnb', h('div.grow', h('label.field', h('span', 'Nome'), name), h('div.flabel', 'MODELO DAS PÁGINAS'), tpls, h('div.flabel', 'CAPA'), cols), prev), [
       { label: 'Cancelar' },
       { label: 'Criar', primary: true, onclick: async c => {
         c();
-        const doc = await NB.createNotebook(name.value.trim() || 'Caderno', tpl);
+        const doc = await NB.createNotebook(name.value.trim() || 'Caderno', tpl, color);
         if (this.view.startsWith('projeto:')) { doc.projects = [this.view.slice(8)]; await S.saveDoc(doc); }
         this.app.openDoc(doc.id);
       } },
@@ -150,10 +181,11 @@ export class Library {
       { icon: 'folder', label: 'Projetos…', onclick: () => openProjectsDialog(d) },
       d.kind === 'notebook' ? { icon: 'upload', label: 'Exportar caderno (PDF / Obsidian)', onclick: () => openNotebookExport(d) } : { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },
       d.kind === 'notebook' ? null : { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
+      d.kind === 'notebook' ? { icon: 'notebook', label: 'Capa…', onclick: () => this.app.reader.coverMenu(d, x - 220, y, () => this.renderMain()) } : null,
       { icon: 'ai', label: 'Resumo das anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
       { icon: 'note', label: 'Renomear', onclick: async () => { const n = await promptBox('Renomear', 'Nome', d.name, 'Salvar'); if (n && n.trim()) { d.name = n.trim(); await S.saveDoc(d); } } },
       '-',
-      { icon: 'trash', label: 'Apagar da biblioteca', danger: true, onclick: async () => { if (await confirmBox('Apagar PDF', 'Apagar “' + S.docTitle(d) + '” e todas as anotações dele deste tablet? O arquivo original no Drive/OneDrive não é afetado.', 'Apagar', true)) await S.deleteDoc(d.id); } },
+      { icon: 'trash', label: 'Apagar da biblioteca', danger: true, onclick: async () => { if (await confirmBox('Apagar PDF', 'Apagar “' + S.docTitle(d) + '” e todas as anotações dele? Com a sincronização ligada, ele some também dos outros aparelhos. Cópias que você salvou fora do app não são afetadas.', 'Apagar', true)) await S.deleteDoc(d.id); } },
     ]);
   }
 

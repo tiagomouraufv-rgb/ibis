@@ -11,8 +11,9 @@ import { openSettings } from './dialogs.js';
 import { vaultZip } from './obsidian.js';
 import { downloadBlob } from './util.js';
 import { isAndroidApp, b64ToBytes } from './platform.js';
+import { startAutoSync } from './sync.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 class App {
   constructor() {
@@ -24,6 +25,7 @@ class App {
   }
 
   async start() {
+    await S.deviceId();
     const st = await S.settings();
     this.applyTheme(st);
     S.on('settings', s => this.applyTheme(s));
@@ -43,6 +45,7 @@ class App {
     await this.showLibrary(true);
     this.indexAll();
     document.getElementById('ver').textContent = 'v' + VERSION + (isAndroidApp ? ' · Android' : '');
+    startAutoSync().catch(e => console.warn(e));
     if (isAndroidApp) {
       window.__nativePending = () => this.takeNativeFile();
       this.takeNativeFile();

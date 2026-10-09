@@ -3,7 +3,7 @@ import { pdfjs, openPdf, getPage, pageList, pageLinks } from './pdfdoc.js';
 import * as S from './store.js';
 import { h, clear, icon, catInfo, uid } from './util.js';
 import { registerTextLayer, unregisterTextLayer } from './textsel.js';
-import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick } from './notebook.js';
+import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl } from './notebook.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -104,6 +104,7 @@ export class Viewer {
         h('span.bm'),
         h('button.ibtn.small', { type: 'button', 'aria-label': 'Opções da página', onclick: e => this.app.pageMenu(this, p, e.clientX, e.clientY) }, icon('more', 18)));
       const pg = h('div.pg' + (p.kind === 'blank' ? '.blank' : '') + (p.kind === 'nb' ? '.nb.tpl-' + (p.tpl || 'blank') : ''));
+      if (p.kind === 'nb' && p.tpl === 'cover') { pg.style.backgroundImage = 'url(' + coverUrl(this.doc, p) + ')'; pg.style.backgroundSize = '100% 100%'; }
       const mg = h('div.mg');
       const svg = sv('svg', { class: 'ov' });
       const live = sv('g', { class: 'live' });
@@ -202,8 +203,11 @@ export class Viewer {
     const scale = this.scale;
     s.rendered = scale;
     if (s.renderTask) { try { s.renderTask.cancel(); } catch (e) {} }
-    const page = await getPage(this.hd, s.p.n);
-    if (s.rendered !== scale) return;
+    const hd = this.hd;
+    if (!hd || this.slots.get(s.p.key) !== s) return;   // documento trocado no meio do caminho
+    let page;
+    try { page = await getPage(hd, s.p.n); } catch (e) { return; }
+    if (s.rendered !== scale || this.hd !== hd) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
     let ps = scale * dpr;
     const maxPix = 14e6;
@@ -771,6 +775,8 @@ export class Viewer {
   hitTest(hit) {
     const { s, x, y } = hit;
     const list = this.annsOf(s.p.key);
+    // no modo leitura, um link desenhado por cima do texto tem prioridade
+    if (this.app.tool === 'read') for (const a of list) if (a.kind === 'link' && a.rects.some(r => inRect(x, y, r, 2))) return { type: 'link', a, s };
     if (this.isNb) {
       for (const a of list.filter(a => a.kind === 'tbox').reverse()) {
         const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 16;
@@ -818,7 +824,7 @@ export class Viewer {
   }
 }
 
-function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n : p.kind === 'nb' ? 'Página ' + p.n : 'Página em branco'; }
+function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n : p.kind === 'nb' ? (p.tpl === 'cover' ? 'Capa' : 'Página ' + p.n) : 'Página em branco'; }
 
 function inRect(x, y, r, pad = 0) { return x >= r[0] - pad && x <= r[0] + r[2] + pad && y >= r[1] - pad && y <= r[1] + r[3] + pad; }
 

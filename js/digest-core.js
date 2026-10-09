@@ -171,7 +171,7 @@ function dgWith(st, items, seq) {
 function dgAdd(st, f, nowMs) {
     var seq = st.seq + 1;
     var now = new Date(nowMs).toISOString();
-    var it = dgNormItem({ id: "D" + seq, created: now, updated: now, src: { doc: f.doc, name: f.name }, page: f.page, pageEnd: f.pageEnd,
+    var it = dgNormItem({ id: "D" + seq + (typeof DG_DEV === "string" ? DG_DEV : ""), created: now, updated: now, src: { doc: f.doc, name: f.name }, page: f.page, pageEnd: f.pageEnd,
                           pageKey: f.pageKey, pageKeyEnd: f.pageKeyEnd, quote: dgCleanQuote(f.quote), note: dgClean(f.note), tags: dgParseTags(f.tags || []), area: f.area || [], audio: f.audio, images: f.images || [] });
     if (!it || (it.quote === "" && it.note === "" && it.images.length === 0)) return { store: st, item: null };
     return { store: dgWith(st, st.items.concat([it]), seq), item: it };

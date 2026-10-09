@@ -62,9 +62,14 @@ export function pageList(doc, hd) {
   return out;
 }
 
-export function pageLabel(key) {
+export function pageLabel(key, doc) {
   if (!key) return '';
-  return key[0] === 'p' ? 'p. ' + key.slice(1) : 'página em branco';
+  if (key[0] === 'p') return 'p. ' + key.slice(1);
+  if (key[0] === 'n') {
+    if (doc && doc.pages) { let n = 0; for (const p of doc.pages) { if (p.tpl !== 'cover') n++; if ('n' + p.id === key) return p.tpl === 'cover' ? 'capa' : 'p. ' + n; } }
+    return 'página do caderno';
+  }
+  return 'página em branco';
 }
 
 export function pageNum(key) {

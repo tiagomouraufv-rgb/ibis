@@ -7,6 +7,8 @@ import { vaultZip, sendNoteToObsidian, docMarkdown, noteFileName } from './obsid
 import { openPdf, pageText, pageLabel } from './pdfdoc.js';
 import * as AI from './ai.js';
 import { zipSync, unzipSync, strToU8, strFromU8 } from '../vendor/fflate.js';
+import * as SY from './sync.js';
+import { isAndroidApp } from './platform.js';
 
 function check(label, on, hint) {
   const i = h('input', { type: 'checkbox' }); i.checked = on;
@@ -242,9 +244,10 @@ export async function openSettings(tab) {
     backup: h('div',
       h('p.muted', 'Seus PDFs, anotações, áudios e o Digest ficam guardados neste aparelho. Faça cópias de segurança de vez em quando: se os dados do navegador/app forem apagados, eles se perdem.'),
       h('div.btnrow', h('button.sbtn', { type: 'button', onclick: () => backup() }, 'Fazer cópia de segurança (.zip)'), h('button.sbtn', { type: 'button', onclick: () => restore() }, 'Restaurar cópia…'))),
+    sync: syncPane(inp, f),
     guia: guideNodes(),
   };
-  const tabs = [['geral', 'Geral'], ['ia', 'IA'], ['obsidian', 'Obsidian'], ['backup', 'Cópia'], ['guia', 'Guia']];
+  const tabs = [['geral', 'Geral'], ['sync', 'Sincronização'], ['ia', 'IA'], ['obsidian', 'Obsidian'], ['backup', 'Cópia'], ['guia', 'Guia']];
   const tabRow = h('div.tabsrow.inmodal', { role: 'tablist' });
   const holder = h('div.setpane');
   const show = id => {
@@ -261,6 +264,40 @@ export async function openSettings(tab) {
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
   ], { wide: true, focus: false });
+}
+
+// Aba Sincronização (Google Drive)
+function syncPane(inp, f) {
+  const info = h('div.syncinfo');
+  const out = h('p.muted');
+  const btns = h('div.btnrow');
+  const fmt = t => t ? new Date(t).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : 'nunca';
+  const render = async () => {
+    const ss = await SY.syncInfo();
+    const stt = SY.syncStatus();
+    clear(info); clear(btns);
+    info.append(
+      h('p', h('b', ss.enabled ? 'Ligada' : 'Desligada'), ss.email ? ' · conta ' + ss.email : '', ' · última sincronização: ' + fmt(ss.last)),
+      stt.msg && stt.state !== 'idle' ? h('p.muted', stt.msg) : '');
+    const go = async () => {
+      if (f.syncClientId) await S.setSettings({ syncClientId: f.syncClientId.value.trim() });
+      out.textContent = 'Conectando…';
+      try { const r = await SY.enableSync(); out.textContent = 'Pronto: ' + r.up + ' envio(s), ' + r.down + ' recebimento(s), ' + r.files + ' arquivo(s).'; }
+      catch (e) { out.textContent = e.message; }
+      render();
+    };
+    if (!ss.enabled) btns.append(h('button.pbtn', { type: 'button', onclick: go }, 'Entrar com a conta Google e ligar'));
+    else btns.append(h('button.pbtn', { type: 'button', onclick: go }, 'Sincronizar agora'),
+      h('button.dbtn', { type: 'button', onclick: async () => { if (await confirmBox('Desligar a sincronização', 'Os dados continuam neste aparelho e no seu Google Drive. Este aparelho só para de enviar e receber.', 'Desligar', true)) { await SY.disableSync(); out.textContent = 'Desligada.'; render(); } } }, 'Desligar'));
+  };
+  render();
+  SY.preloadLogin();
+  return h('div',
+    h('p.muted', 'Mantém PDFs, cadernos, anotações, áudios, imagens, Digest e projetos iguais em todos os aparelhos onde você entrar com a mesma conta Google. Os dados ficam numa pasta “Leitor de Pesquisa (sincronização)” no seu Google Drive. As configurações e a chave do Gemini não são sincronizadas.'),
+    info, btns, out,
+    isAndroidApp ? h('p.muted', 'No app Android o login usa a conta Google do tablet. O ID do cliente abaixo é usado só na versão web.') : null,
+    inp('syncClientId', 'ID do cliente OAuth do Google (versão web) — veja o Guia, “Sincronização”', 'text', '1234…apps.googleusercontent.com'),
+    h('p.muted', 'A sincronização é automática: ao abrir o app, ao voltar para ele, ao sair e alguns segundos depois de cada mudança. Na versão web, o Google pede um toque em “Sincronizar” a cada hora, mais ou menos (o login expira).'));
 }
 
 // Manual curto do app
@@ -286,9 +323,12 @@ function guideNodes() {
         'Selecionando de novo um trecho que já tem algo, o menu mostra a opção de desfazer: a cor marcada com ✕, “Tirar nota”, “Tirar link”, “Tirar do Digest” etc.',
         'Escolher outra cor num trecho já destacado só troca o tipo do destaque.')),
     sec('Cadernos (escrita, texto e equações)',
-      ol('Na Biblioteca, toque em “Novo caderno”, dê um nome e escolha o modelo (em branco, pautado, quadriculado, pontilhado ou Cornell).',
+      ol('Na Biblioteca, toque em “Novo caderno”, dê um nome, escolha o modelo (em branco, pautado, quadriculado, pontilhado ou Cornell) e a cor da capa (ou “Sem capa”).',
+        'A capa é a primeira página, com o nome do caderno. Para mudar a cor depois: menu ⋯ da capa, menu ⋯ do topo (“Capa do caderno…”) ou o menu do caderno na Biblioteca.',
         'Caneta, marca-texto e borracha funcionam como no PDF (só a S Pen escreve).',
-        'Ferramenta Texto (T): toque na página para abrir uma caixa e digitar com o teclado. Ao terminar, toque em “Concluir” (ou fora da caixa): o texto aparece formatado.',
+        'Ferramenta Texto (T): a barra de formatação aparece no topo, ao lado do título, e o painel de Matemática à direita. Toque na página para abrir uma caixa e digitar. Ao terminar, toque em “Concluir” (ou fora da caixa).',
+        'Largura da caixa: “↔” ocupa a largura toda da página, “½” a metade; ou arraste as alças azuis nas bordas da caixa.',
+        'Painel de Matemática: toque no símbolo e o código LaTeX entra onde está o cursor (fora de uma equação, já entra entre $ $). Em ∫, ∑, a/b e parecidos, o cursor fica no primeiro espaço a preencher. “Σ” na barra mostra/esconde o painel.',
         'Para editar de novo, toque na caixa (na ferramenta Ler ou Texto).',
         'Imagem (ícone de foto): escolha um arquivo/foto ou cole. No PC, Ctrl+V cola direto na página.',
         'Laço: contorne traços, imagens ou caixas para mover (arrastando), duplicar, mudar a cor ou apagar. Uma imagem tocada também fica selecionada; o quadradinho do canto muda o tamanho.',
@@ -307,12 +347,29 @@ function guideNodes() {
         'Um trecho do Digest pode ter só imagem e nota, sem texto.')),
     sec('Digest',
       ul('Selecione o trecho e toque em Digest. Escolha a área (Física › Óptica…), tags e escreva a nota.',
+        'Na tela do Digest, o seletor de projeto (ícone de pasta, no topo) mostra só os trechos de PDFs daquele projeto.',
         'Se o trecho continua em outra página ou coluna, toque em “Continuação”, selecione o resto e toque em “Continuar”.',
         'Na tela do Digest há as abas Recentes, Fontes, Áreas, Tags e Revisar.')),
-    sec('Links entre PDFs',
-      ul('Selecione um trecho e toque em Link (ou use a ferramenta Link e desenhe um retângulo).',
-        'Escolha o destino: página deste PDF, outro PDF, Digest, nota do Obsidian ou site. “Escolher o destino tocando na página” marca o ponto exato.',
+    sec('Links entre PDFs e cadernos',
+      ul('Selecione um trecho e toque em Link, ou use a ferramenta Link e desenhe um retângulo (no caderno, por cima do texto, da escrita ou da imagem). No caderno, o Laço também tem “Criar link a partir da seleção”.',
+        'Escolha o destino: neste documento, outro PDF ou caderno, Digest, nota do Obsidian ou site. “Escolher o destino tocando na página” marca o ponto exato.',
+        'Para seguir o link, toque nele com a ferramenta Ler.',
         'Na página de destino aparece um ← que mostra de onde vêm os links.')),
+    sec('Troca rápida entre arquivos',
+      ul('Deslize dois dedos para a esquerda sobre a página: volta ao arquivo aberto antes (PDF ou caderno). Repita para alternar entre os dois.',
+        'Deslize dois dedos para a direita, ou toque no botão ⇆ do topo: aparece a lista dos arquivos recentes.',
+        'Cada arquivo reabre no ponto onde você estava.')),
+    sec('Sincronização (Google Drive): preparar uma vez',
+      h('p.muted', 'O Google exige que o app seja registrado na sua conta. É de graça e feito uma vez só (uns 15 minutos), no computador.'),
+      ol('Entre em console.cloud.google.com com a sua conta Google. No topo, clique no seletor de projetos → “Novo projeto” → nome “Leitor de Pesquisa” → Criar. Confira que ele ficou selecionado no topo.',
+        'Menu ☰ → “APIs e serviços” → “Biblioteca”. Busque “Google Drive API”, abra e clique em “Ativar”.',
+        'Menu ☰ → “Google Auth Platform” (ou “APIs e serviços” → “Tela de permissão OAuth”). Clique em “Começar”: nome do app “Leitor de Pesquisa”, seu e-mail de suporte, público “Externo”, seu e-mail de contato, aceite e “Criar”.',
+        'Em “Público-alvo” (Audience), em “Usuários de teste”, clique em “Adicionar usuários” e coloque o seu Gmail. Salve.',
+        'Em “Acesso a dados” (Data Access), clique em “Adicionar ou remover escopos”, marque “…/auth/drive.file” (ou cole https://www.googleapis.com/auth/drive.file em “Adicionar escopos manualmente”), “Atualizar” e “Salvar”.',
+        'Versão web: em “Clientes” → “Criar cliente” → tipo “Aplicativo da Web”. Em “Origens JavaScript autorizadas”, adicione o endereço do seu GitHub Pages só com o domínio, por exemplo https://seunome.github.io (sem a parte /leitor/). Criar. Copie o “ID do cliente” (termina em .apps.googleusercontent.com).',
+        'Aqui no app (web): Configurações → Sincronização → cole o ID do cliente → “Entrar com a conta Google e ligar”. Na janela do Google, escolha a conta; como o app está em teste, pode aparecer o aviso “O Google não verificou este app”: toque em “Continuar”.',
+        'App Android: em “Clientes” → “Criar cliente” → tipo “Android”. Nome do pacote: com.tiago.leitorpesquisa. “Impressão digital do certificado SHA-1”: veja no LEIA-ME do projeto Android como obter (um comando no PC). Criar. No app Android não é preciso colar nada: Configurações → Sincronização → “Entrar com a conta Google e ligar”.'),
+      h('p.muted', 'Depois disso a sincronização é automática. Se um mesmo item for editado nos dois aparelhos antes de sincronizar, fica a edição mais recente (campos diferentes de um mesmo documento se juntam). Apagar num aparelho apaga nos outros.')),
     sec('Chave do Gemini (IA)',
       ol('No computador ou no tablet, entre em aistudio.google.com com sua conta Google.',
         'Na primeira vez, aceite os termos e toque em Continue.',
@@ -333,7 +390,7 @@ function guideNodes() {
       ul('Exportar gera o PDF com as marcações: “Editável” (outras pessoas podem ver e mexer; ao reabrir no app, tudo volta editável) ou “Achatado” (aparece igual em qualquer leitor).',
         'Enviar ao Obsidian: “Enviar esta nota” abre o app do Obsidian (informe o nome do cofre na aba Obsidian); “Pacote .zip” traz todas as notas, o Digest e os áudios para extrair no cofre.')),
     sec('Cópia de segurança',
-      ul('Tudo fica guardado neste aparelho. Use a aba Cópia de vez em quando para gerar um .zip e guarde-o no Drive.',
+      ul('Tudo fica guardado neste aparelho (e no seu Google Drive, se a sincronização estiver ligada). Use a aba Cópia de vez em quando para gerar um .zip extra.',
         'Para passar seus dados para outro aparelho (ou do navegador para o app Android), faça a cópia num e restaure no outro.')));
 }
 

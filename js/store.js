@@ -9,7 +9,43 @@ export function emit(ev, data) { (listeners.get(ev) || []).forEach(fn => { try {
 // ---------- documentos ----------
 export async function allDocs() { return (await db.all('docs')).sort((a, b) => (b.opened || b.added) - (a.opened || a.added)); }
 export function getDoc(id) { return db.get('docs', id); }
-export async function saveDoc(doc) { await db.put('docs', doc); emit('docs', doc); return doc; }
+export async function saveDoc(doc) { await stampFields('docs', doc); await db.put('docs', doc); emit('docs', doc); dirty(); return doc; }
+
+// ---------- sincronização: carimbo de tempo por campo e lápides (itens apagados) ----------
+let quiet = 0;   // >0 enquanto a sincronização aplica dados vindos da nuvem
+export function quietly(on) { quiet += on ? 1 : -1; }
+export function dirty() { if (!quiet) emit('dirty'); }
+async function stampFields(store, rec) {
+  const old = await db.get(store, rec.id);
+  const now = Date.now();
+  const fts = Object.assign({}, (old && old.fts) || rec.fts || {});
+  let changed = !old;
+  for (const k of Object.keys(rec)) {
+    if (k === 'fts' || k === 'updated') continue;
+    if (!old || JSON.stringify(old[k]) !== JSON.stringify(rec[k])) { fts[k] = now; changed = true; }
+  }
+  if (old) for (const k of Object.keys(old)) if (!(k in rec) && k !== 'fts' && k !== 'updated') { fts[k] = now; changed = true; }
+  rec.fts = fts;
+  if (changed || !rec.updated) rec.updated = now;
+}
+let tombCache = null;
+export async function tombs() { if (!tombCache) tombCache = await db.kvGet('tombs', {}); return tombCache; }
+export async function saveTombs() { await db.kvSet('tombs', await tombs()); }
+async function tomb(ids) {
+  const t = await tombs(); const now = Date.now(); let n = 0;
+  for (const i of ids) if (i) { t[i] = now; n++; }
+  if (n) { await db.kvSet('tombs', t); dirty(); }
+}
+async function untomb(id) { const t = await tombs(); if (t[id]) { delete t[id]; await db.kvSet('tombs', t); } }
+export function resetAnnCache(docId) { if (docId) annCache.delete(docId); else annCache.clear(); }
+export function resetCaches() { annCache.clear(); digestCache = null; settingsCache = null; tombCache = null; }
+// identificador curto deste aparelho (evita que dois aparelhos criem trechos do Digest com o mesmo número)
+export async function deviceId() {
+  let d = await db.kvGet('deviceId', '');
+  if (!d) { d = Math.random().toString(36).slice(2, 6); await db.kvSet('deviceId', d); }
+  window.DG_DEV = '-' + d;
+  return d;
+}
 
 export async function addDocFromBytes(name, bytes, extra = {}) {
   const fileId = uid('f');
@@ -35,6 +71,7 @@ export async function deleteDoc(id) {
   await db.del('texts', id);
   await db.del('docs', id);
   annCache.delete(id);
+  await tomb([id, doc.fileId].concat(anns.map(a => a.id), recs.map(r => r.id), audio));
   emit('docs', null);
 }
 
@@ -57,12 +94,15 @@ async function rawPut(a) {
   const i = list.findIndex(x => x.id === a.id);
   if (i >= 0) list[i] = a; else list.push(a);
   await db.put('annots', a);
+  await untomb(a.id);
+  dirty();
 }
 async function rawDel(a) {
   const list = await annots(a.docId);
   const i = list.findIndex(x => x.id === a.id);
   if (i >= 0) list.splice(i, 1);
   await db.del('annots', a.id);
+  await tomb([a.id]);
 }
 
 export async function putAnnot(a, opts = {}) {
@@ -97,7 +137,7 @@ async function applyStep(step, dir) {
   for (const s of items) {
     const target = dir === 'undo' ? s.before : s.after;
     const other = dir === 'undo' ? s.after : s.before;
-    if (target) await rawPut(JSON.parse(JSON.stringify(target)));
+    if (target) { const t = JSON.parse(JSON.stringify(target)); t.updated = Date.now(); await rawPut(t); }
     else if (other) await rawDel(other);
   }
   emit('annots', { docId: step.docId });
@@ -116,8 +156,8 @@ export async function audioBlob(id) { const f = await db.get('files', id); retur
 // ---------- gravações sincronizadas ----------
 export async function recordings(docId) { return (await db.byIndex('recordings', 'docId', docId)).sort((a, b) => a.started - b.started); }
 export async function allRecordings() { return db.all('recordings'); }
-export function saveRecording(r) { return db.put('recordings', r).then(() => emit('recordings', r)); }
-export async function deleteRecording(r) { await db.del('recordings', r.id); await db.del('files', r.fileId); emit('recordings', r); }
+export function saveRecording(r) { r.updated = Date.now(); return db.put('recordings', r).then(() => { emit('recordings', r); dirty(); }); }
+export async function deleteRecording(r) { await db.del('recordings', r.id); await db.del('files', r.fileId); await tomb([r.id, r.fileId]); emit('recordings', r); }
 
 // ---------- Digest ----------
 let digestCache = null;
@@ -128,18 +168,24 @@ export async function digest() {
   }
   return digestCache;
 }
-export async function saveDigest(st) {
+export async function saveDigest(st, opts = {}) {
+  const old = digestCache || await digest();
+  const keep = new Set(st.items.map(i => i.id));
+  const gone = old.items.filter(i => !keep.has(i.id)).map(i => i.id);
+  if (gone.length && !opts.fromSync) await tomb(gone);
   digestCache = st;
+  dirty();
   await db.kvSet('digest', JSON.parse(dgSerialize(st)));
   emit('digest', st);
 }
 
 // ---------- projetos ----------
 export async function projects() { return (await db.all('projects')).sort((a, b) => a.name.localeCompare(b.name, 'pt')); }
-export async function saveProject(p) { if (!p.id) p.id = uid('pr'); if (!p.created) p.created = Date.now(); await db.put('projects', p); emit('projects', p); return p; }
+export async function saveProject(p) { if (!p.id) p.id = uid('pr'); if (!p.created) p.created = Date.now(); await stampFields('projects', p); await db.put('projects', p); emit('projects', p); dirty(); return p; }
 export async function deleteProject(id) {
   await db.del('projects', id);
-  for (const d of await allDocs()) if ((d.projects || []).includes(id)) { d.projects = d.projects.filter(x => x !== id); await db.put('docs', d); }
+  await tomb([id]);
+  for (const d of await allDocs()) if ((d.projects || []).includes(id)) { d.projects = d.projects.filter(x => x !== id); await saveDoc(d); }
   emit('projects', null); emit('docs', null);
 }
 
@@ -148,7 +194,7 @@ const DEFAULTS = {
   geminiKey: '', geminiModel: 'gemini-3.8-flash', language: 'português do Brasil',
   researchContext: 'Pesquisador em fotônica e pinças ópticas (UFV): aprisionamento óptico de nanopartículas de semicondutores orgânicos (MEH-PPV/Pdots) e de micropartículas semicondutoras (Ge, Si); modelagem teórica com osciladores de Lorentz no Mathcad Prime; orienta alunos de graduação.',
   translateTo: 'pt', obsidianVault: '', obsidianFolder: 'Leituras', theme: 'auto', pdfMode: 'normal',
-  penOnly: true, penWidth: 2, penColor: '#16191D', markerColor: '#FFE36E', ttsRate: 1,
+  penOnly: true, syncClientId: '', penWidth: 2, penColor: '#16191D', markerColor: '#FFE36E', ttsRate: 1,
 };
 let settingsCache = null;
 export async function settings() {

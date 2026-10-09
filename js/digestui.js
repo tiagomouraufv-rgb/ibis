@@ -115,7 +115,7 @@ export class DigestScreen {
   constructor(app) {
     this.app = app;
     this.root = h('div.screen.digest');
-    this.tab = 'recentes'; this.q = ''; this.areaPath = []; this.tagSel = []; this.source = '';
+    this.tab = 'recentes'; this.q = ''; this.areaPath = []; this.tagSel = []; this.source = ''; this.project = '';
     S.on('digest', () => { if (this.root.isConnected) this.render(); });
   }
 
@@ -125,14 +125,25 @@ export class DigestScreen {
   }
 
   async render() {
-    const st = await S.digest();
+    const all = await S.digest();
+    // filtro por projeto: trechos cujo documento de origem está no projeto escolhido
+    const projs = await S.projects();
+    if (this.project && !projs.some(p => p.id === this.project)) this.project = '';
+    let st = all;
+    if (this.project) {
+      const inProj = new Set((await S.allDocs()).filter(d => (d.projects || []).includes(this.project)).map(d => d.id));
+      st = Object.assign({}, all, { items: all.items.filter(it => inProj.has(it.src.doc)) });
+    }
+    const psel = h('select.projsel', { 'aria-label': 'Filtrar por projeto', onchange: () => { this.project = psel.value; this.source = ''; this.areaPath = []; this.tagSel = []; this.render(); } },
+      h('option', { value: '' }, 'Todos os projetos'), projs.map(p => h('option', { value: p.id }, p.name)));
+    psel.value = this.project;
     clear(this.root);
     const tabs = [['recentes', 'Recentes'], ['fontes', 'Fontes'], ['areas', 'Áreas'], ['tags', 'Tags'], ['revisar', 'Revisar']];
     const search = h('input', { type: 'search', placeholder: 'Buscar no Digest…', value: this.q });
     search.addEventListener('input', () => { this.q = search.value; this.renderList(st, list); });
     const list = h('div.dlist');
     this.root.append(
-      h('header.top', btn('back', '', () => this.app.showLibrary(), { iconOnly: true, title: 'Voltar' }), h('h1', 'Digest'), h('span.muted', st.items.length + ' trechos'), h('div.grow'), search,
+      h('header.top', btn('back', '', () => this.app.showLibrary(), { iconOnly: true, title: 'Voltar' }), h('h1', 'Digest'), h('span.muted', st.items.length + ' trechos'), h('div.grow'), h('label.projpick', icon('folder', 18), psel), search,
         btn('share', 'Obsidian', () => this.app.exportObsidianAll(), { cls: 'sbtn' })),
       h('div.tabsrow', { role: 'tablist' }, tabs.map(([id, l]) => h('button.tab', { type: 'button', role: 'tab', 'aria-selected': String(this.tab === id), onclick: () => { this.tab = id; this.render(); } }, l))),
       h('div.dbody', this.side(st), list));

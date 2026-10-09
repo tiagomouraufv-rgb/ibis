@@ -37,6 +37,17 @@ export class Reader {
     this.buildChrome();
     S.on('settings', st => { this.settings = st; this.applyPdfMode(); });
     S.on('annots', () => { if (this.sideTab && this.sideOpen) this.renderSide(); });
+    // documento alterado em outro aparelho (sincronização): atualiza o que está aberto
+    S.on('docRemote', d => {
+      for (const v of this.viewers) {
+        if (!v.doc || v.doc.id !== d.id) continue;
+        const relay = JSON.stringify(v.doc.pages) !== JSON.stringify(d.pages) || JSON.stringify(v.doc.margins) !== JSON.stringify(d.margins) || JSON.stringify(v.doc.blanks) !== JSON.stringify(d.blanks);
+        for (const k of Object.keys(v.doc)) if (!(k in d)) delete v.doc[k];
+        Object.assign(v.doc, JSON.parse(JSON.stringify(d)));
+        if (relay) v.refreshPages();
+        if (v === this.active) this.titleEl.textContent = S.docTitle(v.doc);
+      }
+    });
     document.addEventListener('selectionchange', debounce(() => this.onSelection(), 220));
     // enquanto arrasta a seleção, o menu fica escondido; ao soltar, aparece
     const sc = e => { if (this.root.isConnected && e.target.closest && e.target.closest('.textLayer')) this.selDragging = true; };
@@ -63,17 +74,21 @@ export class Reader {
     this.recBtn = btn('rec', '', () => this.toggleRec(), { title: 'Gravar sessão (áudio sincronizado com a escrita)', iconOnly: true });
     this.recBtn.classList.add('recbtn');
     this.modeBtn = btn('sun', '', () => this.cyclePdfMode(), { title: 'Modo da página: normal, sépia, escuro', iconOnly: true });
+    this.fmtSlot = h('div.fmtslot');
+    const hideTb = el => { el.classList.add('hide-tb'); return el; };
     const top = h('header.rtop',
       btn('back', '', () => this.app.showLibrary(), { title: 'Biblioteca', iconOnly: true }),
       btn('list', '', () => this.toggleSide(), { title: 'Painel lateral: sumário, páginas, anotações, busca', iconOnly: true }),
       h('div.rtitles', this.titleEl, this.pageEl),
       this.backBtn,
-      h('div.grow'),
-      btn('search', '', () => this.toggleSide('busca'), { title: 'Buscar no PDF', iconOnly: true }),
-      btn('split', '', () => this.toggleSplit(), { title: 'Lado a lado', iconOnly: true }),
-      this.modeBtn,
-      this.recBtn,
-      btn('digest', 'Digest', () => this.app.showDigest(), { cls: 'sbtn hide-sm' }),
+      this.fmtSlot,
+      h('div.grow.hide-tb'),
+      btn('swap', '', e => this.recentMenu(e), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
+      hideTb(btn('search', '', () => this.toggleSide('busca'), { title: 'Buscar no PDF', iconOnly: true })),
+      hideTb(btn('split', '', () => this.toggleSplit(), { title: 'Lado a lado', iconOnly: true })),
+      hideTb(this.modeBtn),
+      hideTb(this.recBtn),
+      hideTb(btn('digest', 'Digest', () => this.app.showDigest(), { cls: 'sbtn hide-sm' })),
       btn('upload', 'Exportar', () => NB.isNotebook(this.doc) ? openNotebookExport(this.doc) : openExportDialog(this.doc), { cls: 'pbtn' }),
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }),
     );
@@ -105,7 +120,105 @@ export class Reader {
     this.right = h('aside.rpanel');
     this.pill = h('div.pill');
     this.selMenu = h('div.selmenu', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
-    r.append(top, h('div.rbody', rail, this.side, this.panes, this.right), this.selMenu, this.pill);
+    this.mathPal = this.buildMathPal();
+    r.append(top, h('div.rbody', rail, this.side, this.panes, this.mathPal, this.right), this.selMenu, this.pill);
+    this.bindSwipe();
+  }
+
+  // ---------- barra de texto no topo + painel de matemática ----------
+  showTextBar() {
+    const on = !!(this.doc && NB.isNotebook(this.doc) && (this.tool === 'text' || this.textEditor.active));
+    this.root.classList.toggle('textbar', on);
+    if (on && !this.fmtSlot.contains(this.textEditor.bar)) this.fmtSlot.appendChild(this.textEditor.bar);
+    if (!on && this.textEditor._bar) this.textEditor._bar.remove();
+    this.mathPal.classList.toggle('open', on && !this.mathHidden);
+  }
+  toggleMathPal() { this.mathHidden = !this.mathHidden; this.showTextBar(); }
+
+  buildMathPal() {
+    const G = [
+      ['Letras gregas', [['α', '\\alpha'], ['β', '\\beta'], ['γ', '\\gamma'], ['δ', '\\delta'], ['ε', '\\varepsilon'], ['ζ', '\\zeta'], ['η', '\\eta'], ['θ', '\\theta'], ['κ', '\\kappa'], ['λ', '\\lambda'], ['μ', '\\mu'], ['ν', '\\nu'], ['ξ', '\\xi'], ['π', '\\pi'], ['ρ', '\\rho'], ['σ', '\\sigma'], ['τ', '\\tau'], ['φ', '\\varphi'], ['χ', '\\chi'], ['ψ', '\\psi'], ['ω', '\\omega'], ['Γ', '\\Gamma'], ['Δ', '\\Delta'], ['Θ', '\\Theta'], ['Λ', '\\Lambda'], ['Π', '\\Pi'], ['Σ', '\\Sigma'], ['Φ', '\\Phi'], ['Ψ', '\\Psi'], ['Ω', '\\Omega']]],
+      ['Cálculo', [['∫', '\\int_{@}^{}'], ['∫ab', '\\int_{a}^{b} @ \\, dx'], ['∬', '\\iint'], ['∮', '\\oint'], ['∑', '\\sum_{@}^{}'], ['∏', '\\prod_{@}^{}'], ['lim', '\\lim_{@ \\to }'], ['∂', '\\partial'], ['∇', '\\nabla'], ['∇×', '\\nabla \\times'], ['∇·', '\\nabla \\cdot'], ['∇²', '\\nabla^2'], ['d/dx', '\\frac{d@}{dx}'], ['∂/∂x', '\\frac{\\partial @}{\\partial x}'], ['∞', '\\infty'], ['ẋ', '\\dot{@}']]],
+      ['Estrutura', [['a/b', '\\frac{@}{}'], ['x²', '^{@}'], ['xₙ', '_{@}'], ['√', '\\sqrt{@}'], ['ⁿ√', '\\sqrt[n]{@}'], ['( )', '\\left( @ \\right)'], ['[ ]', '\\left[ @ \\right]'], ['| |', '\\left| @ \\right|'], ['⟨ ⟩', '\\langle @ \\rangle'], ['matriz', '\\begin{pmatrix} @ & \\\\  & \\end{pmatrix}'], ['casos', '\\begin{cases} @ & \\\\  & \\end{cases}'], ['texto', '\\text{@}']]],
+      ['Vetores', [['v⃗', '\\vec{@}'], ['x̂', '\\hat{@}'], ['𝐯', '\\mathbf{@}'], ['·', '\\cdot'], ['×', '\\times'], ['⊗', '\\otimes'], ['†', '^\\dagger'], ['*', '^*'], ['‖ ‖', '\\| @ \\|'], ['⟨|', '\\langle @ |'], ['|⟩', '| @ \\rangle'], ['ℏ', '\\hbar']]],
+      ['Relações', [['≠', '\\neq'], ['≈', '\\approx'], ['≡', '\\equiv'], ['∝', '\\propto'], ['≤', '\\leq'], ['≥', '\\geq'], ['≪', '\\ll'], ['≫', '\\gg'], ['±', '\\pm'], ['∓', '\\mp'], ['→', '\\to'], ['⇒', '\\Rightarrow'], ['⇔', '\\Leftrightarrow'], ['∈', '\\in'], ['⊂', '\\subset'], ['∀', '\\forall'], ['∃', '\\exists'], ['°', '^\\circ']]],
+      ['Funções', [['eˣ', 'e^{@}'], ['ln', '\\ln'], ['log', '\\log'], ['exp', '\\exp'], ['sin', '\\sin'], ['cos', '\\cos'], ['tan', '\\tan'], ['Re', '\\mathrm{Re}'], ['Im', '\\mathrm{Im}'], ['ε₀', '\\varepsilon_0'], ['μ₀', '\\mu_0'], ['(n)', '\\eqn']]],
+    ];
+    const pal = h('aside.mathpal', { 'aria-label': 'Símbolos de matemática' },
+      h('div.mphead', h('b', 'Matemática'), h('button.ibtn.small', { type: 'button', title: 'Esconder', 'aria-label': 'Esconder', onclick: () => this.toggleMathPal() }, icon('close', 16))));
+    for (const [title, items] of G) {
+      pal.appendChild(h('div.mpsec', title));
+      pal.appendChild(h('div.mpgrid', items.map(([l, code]) => h('button.mpbtn', { type: 'button', title: code.replace('@', '…'), onpointerdown: e => e.preventDefault(), onclick: () => this.textEditor.insertMath(code) }, l))));
+    }
+    return pal;
+  }
+
+  // ---------- arquivos recentes (troca rápida) ----------
+  async noteRecent(id) {
+    const { db } = await import('./db.js');
+    const list = (await db.kvGet('recent', [])).filter(x => x !== id);
+    list.unshift(id);
+    await db.kvSet('recent', list.slice(0, 12));
+  }
+  async recentDocs() {
+    const { db } = await import('./db.js');
+    const ids = await db.kvGet('recent', []);
+    const out = [];
+    for (const id of ids) { const d = await S.getDoc(id); if (d) out.push(d); }
+    return out;
+  }
+  async switchTo(id) {
+    const v = this.active;
+    if (v && v.doc) { v.doc.lastKey = v.currentKey(); v.doc.lastY = v.currentOffset(); await S.saveDoc(v.doc); }
+    if (this.textEditor.active) await this.textEditor.close();
+    await this.app.openDoc(id);
+    const d = await S.getDoc(id);
+    if (d) toast('↔ ' + S.docTitle(d), 1600);
+  }
+  async quickSwitch() {
+    const list = (await this.recentDocs()).filter(d => !this.doc || d.id !== this.doc.id);
+    if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
+    this.switchTo(list[0].id);
+  }
+  async recentMenu(e) {
+    document.querySelectorAll('.recentbar').forEach(x => x.remove());
+    const list = (await this.recentDocs()).filter(d => !this.doc || d.id !== this.doc.id).slice(0, 8);
+    if (!list.length) { toast('Nenhum outro arquivo aberto recentemente.'); return; }
+    const bar = h('div.recentbar', { role: 'dialog', 'aria-label': 'Arquivos recentes' },
+      h('div.rbhead', h('b', 'Recentes'), h('span.muted', 'Dica: deslize dois dedos para a esquerda na página para voltar ao anterior'), h('div.grow'), btn('close', '', () => bar.remove(), { iconOnly: true, title: 'Fechar' })),
+      h('div.rbrow', list.map((d, i) => {
+        const th = h('div.rbthumb');
+        this.app.library.thumb(d, th).catch(() => {});
+        return h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { bar.remove(); this.switchTo(d.id); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : 'PDF'));
+      })));
+    this.root.appendChild(bar);
+    setTimeout(() => {
+      const off = ev => { if (!bar.contains(ev.target)) { bar.remove(); document.removeEventListener('pointerdown', off, true); } };
+      document.addEventListener('pointerdown', off, true);
+    }, 0);
+  }
+  // dois dedos deslizando na horizontal: esquerda = arquivo anterior; direita = lista de recentes
+  bindSwipe() {
+    let st = null;
+    const pos = t => [...t].map(x => ({ x: x.clientX, y: x.clientY }));
+    const dist = p => Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+    this.panes.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) st = { p0: pos(e.touches), p1: pos(e.touches), t: Date.now() };
+      else if (e.touches.length > 2) st = null;
+    }, { passive: true });
+    this.panes.addEventListener('touchmove', e => { if (st && e.touches.length === 2) st.p1 = pos(e.touches); }, { passive: true });
+    const end = e => {
+      if (!st || e.touches.length > 0 && e.touches.length !== 1) return;
+      const s0 = st; st = null;
+      const dx = [0, 1].map(i => s0.p1[i].x - s0.p0[i].x), dy = [0, 1].map(i => s0.p1[i].y - s0.p0[i].y);
+      const ax = (dx[0] + dx[1]) / 2, ay = (dy[0] + dy[1]) / 2;
+      const same = Math.sign(dx[0]) === Math.sign(dx[1]);
+      const pinch = Math.abs(dist(s0.p1) - dist(s0.p0)) / Math.max(1, dist(s0.p0));
+      if (!same || Math.abs(ax) < 120 || Math.abs(ay) > Math.abs(ax) * 0.6 || pinch > 0.3 || Date.now() - s0.t > 900) return;
+      if (ax < 0) this.quickSwitch(); else this.recentMenu();
+    };
+    this.panes.addEventListener('touchend', end, { passive: true });
+    this.panes.addEventListener('touchcancel', () => { st = null; }, { passive: true });
   }
 
   async open(doc, at) {
@@ -132,6 +245,7 @@ export class Reader {
     this.onNav(this.active);
     if (this.sideOpen) this.renderSide();
     if (!nb) this.app.indexDoc(this.doc);
+    this.noteRecent(this.doc.id);
   }
 
   addViewer() {
@@ -172,6 +286,7 @@ export class Reader {
     if (id === 'crop') this.penHint.textContent = 'Desenhe um retângulo em volta da equação ou figura';
     if (id !== 'lasso') this.viewers.forEach(v => v.clearSelection());
     if (this.textEditor && this.textEditor.active && id !== 'text' && id !== 'read') this.textEditor.close();
+    this.showTextBar();
   }
 
   renderColors() {
@@ -459,14 +574,14 @@ export class Reader {
     const inc = all.filter(a => a.kind === 'link' && a.target && a.target.type === 'page' && a.target.docId === v.doc.id);
     body.appendChild(h('div.shead', h('span', 'Saindo deste documento'), btn('plus', 'Novo link', () => this.linkBuilder(v, { pageKey: v.currentKey(), rects: [[10, 10, 60, 14]], text: '', pageLink: true }), { cls: 'sbtn small' })));
     if (!out.length) body.appendChild(h('p.muted.pad', 'Selecione um trecho e toque em “Link”, ou use a ferramenta de link (retângulo) na barra lateral.'));
-    for (const a of out) body.appendChild(h('div.srow', h('button.grow.linkrow', { type: 'button', onclick: () => v.goTo(a.pageKey, a.rects[0][1], { flash: true }) }, h('div.clamp', (a.text ? '“' + a.text.slice(0, 60) + '” ' : '') + '→ ' + (a.targetLabel || '')), h('div.muted', pageLabel(a.pageKey))),
+    for (const a of out) body.appendChild(h('div.srow', h('button.grow.linkrow', { type: 'button', onclick: () => v.goTo(a.pageKey, a.rects[0][1], { flash: true }) }, h('div.clamp', (a.text ? '“' + a.text.slice(0, 60) + '” ' : '') + '→ ' + (a.targetLabel || '')), h('div.muted', pageLabel(a.pageKey, v.doc))),
       btn('fwd', '', () => this.followLink(v, a), { iconOnly: true, title: 'Seguir o link' })));
     body.appendChild(h('div.shead', h('span', 'Chegando aqui (links de volta)')));
     if (!inc.length) body.appendChild(h('p.muted.pad', 'Nenhum link aponta para este documento.'));
     for (const a of inc) {
       const sd = docs.find(d => d.id === a.docId);
       body.appendChild(h('button.srow', { type: 'button', onclick: () => this.jump({ docId: a.docId, pageKey: a.pageKey, y: a.rects[0][1] }) },
-        icon('back', 16), h('div.grow', h('div.clamp', (sd ? S.docTitle(sd) : '?') + ' · ' + pageLabel(a.pageKey)), h('div.muted.clamp', (a.text || '') + ' → ' + pageLabel(a.target.pageKey)))));
+        icon('back', 16), h('div.grow', h('div.clamp', (sd ? S.docTitle(sd) : '?') + ' · ' + pageLabel(a.pageKey, sd)), h('div.muted.clamp', (a.text || '') + ' → ' + pageLabel(a.target.pageKey, v.doc)))));
     }
   }
 
@@ -883,30 +998,33 @@ export class Reader {
     const tabs = h('div.chips');
     const panel = h('div.lbpanel');
     const state = { docId: v.doc.id, pageKey: v.currentKey(), y: 0, url: 'https://', file: '', digestId: '' };
-    const pageSelect = (docId, hd, doc) => {
+    const pageSelect = (pages, doc) => {
       const sel = h('select');
-      for (const p of pageList(doc, hd)) sel.appendChild(h('option', { value: p.key }, p.kind === 'pdf' ? 'Página ' + p.n : 'Página em branco (depois da ' + (doc.blanks.find(b => 'b' + b.id === p.key) || {}).after + ')'));
+      for (const p of pages) sel.appendChild(h('option', { value: p.key }, p.kind === 'pdf' ? 'Página ' + p.n : p.kind === 'nb' ? (p.n ? 'Página ' + p.n : 'Capa') : 'Página em branco (depois da ' + (doc.blanks.find(b => 'b' + b.id === p.key) || {}).after + ')'));
+      if (!pages.some(p => p.key === state.pageKey) && pages[0]) state.pageKey = pages[0].key;
       sel.value = state.pageKey;
       sel.addEventListener('change', () => { state.pageKey = sel.value; state.y = 0; });
       return sel;
     };
     const render = async () => {
       clear(tabs); clear(panel);
-      for (const [id, l] of [['page', 'Página deste PDF'], ['doc', 'Outro PDF'], ['digest', 'Digest'], ['obsidian', 'Obsidian'], ['url', 'Site']]) tabs.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(type === id), onclick: () => { type = id; if (id === 'page') { state.docId = v.doc.id; } render(); } }, l));
+      for (const [id, l] of [['page', 'Neste documento'], ['doc', 'Outro PDF ou caderno'], ['digest', 'Digest'], ['obsidian', 'Obsidian'], ['url', 'Site']]) tabs.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String(type === id), onclick: () => { type = id; if (id === 'page') { state.docId = v.doc.id; } render(); } }, l));
       if (type === 'page' || type === 'doc') {
         if (type === 'doc') {
           const others = docs.filter(d => d.id !== v.doc.id);
-          if (!others.length) { panel.appendChild(h('p.muted', 'Não há outros PDFs na biblioteca.')); return; }
-          if (state.docId === v.doc.id) { state.docId = others[0].id; state.pageKey = 'p1'; }
-          const ds = h('select', { onchange: async () => { state.docId = ds.value; state.pageKey = 'p1'; render(); } }, others.map(d => h('option', { value: d.id }, S.docTitle(d))));
+          if (!others.length) { panel.appendChild(h('p.muted', 'Não há outros documentos na biblioteca.')); return; }
+          if (state.docId === v.doc.id) { state.docId = others[0].id; state.pageKey = ''; }
+          const ds = h('select', { onchange: async () => { state.docId = ds.value; state.pageKey = ''; render(); } }, others.map(d => h('option', { value: d.id }, (NB.isNotebook(d) ? '📓 ' : '') + S.docTitle(d))));
           ds.value = state.docId;
           panel.appendChild(h('label.field', h('span', 'Documento'), ds));
         }
         const d = docs.find(x => x.id === state.docId) || v.doc;
-        const hd = await openPdf(d);
-        panel.appendChild(h('label.field', h('span', 'Página'), pageSelect(d.id, hd, d)));
+        let pages;
+        try { pages = NB.isNotebook(d) ? NB.nbPageList(d) : pageList(d, await openPdf(d)); }
+        catch (e) { panel.appendChild(h('p.err', 'Não consegui abrir este documento: ' + e.message)); return; }
+        panel.appendChild(h('label.field', h('span', 'Página'), pageSelect(pages, d)));
         const bms = d.bookmarks || [];
-        if (bms.length) panel.appendChild(h('div.chips', h('span.muted', 'Marcadores: '), bms.map(b => h('button.chip', { type: 'button', onclick: () => { state.pageKey = b.key; state.y = 0; render(); } }, (b.label || 'marcador') + ' · ' + pageLabel(b.key)))));
+        if (bms.length) panel.appendChild(h('div.chips', h('span.muted', 'Marcadores: '), bms.map(b => h('button.chip', { type: 'button', onclick: () => { state.pageKey = b.key; state.y = 0; render(); } }, (b.label || 'marcador') + ' · ' + pageLabel(b.key, d)))));
         panel.appendChild(h('button.sbtn', { type: 'button', onclick: () => {
           m.close();
           this.showPill('Toque no ponto exato de destino. Você pode rolar, mudar de página ou abrir outro PDF lado a lado.', () => { this.picking = null; this.hidePill(); });
@@ -950,7 +1068,7 @@ export class Reader {
     const st = await S.settings();
     const dg = await S.digest();
     let label = '';
-    if (target.type === 'page') { const d = (docs || []).find(x => x.id === target.docId) || v.doc; label = (d.id === v.doc.id ? '' : S.docTitle(d) + ', ') + pageLabel(target.pageKey); }
+    if (target.type === 'page') { const d = (docs || []).find(x => x.id === target.docId) || v.doc; label = (d.id === v.doc.id ? '' : S.docTitle(d) + ', ') + pageLabel(target.pageKey, d); }
     else if (target.type === 'url') label = target.url;
     else if (target.type === 'obsidian') { label = 'Obsidian: ' + target.file; target.uri = 'obsidian://open?' + (st.obsidianVault ? 'vault=' + encodeURIComponent(st.obsidianVault) + '&' : '') + 'file=' + encodeURIComponent(target.file); }
     else if (target.type === 'digest') { const it = dgFind(dg, target.id); label = 'Digest: ' + (it ? (it.quote || it.note).slice(0, 50) : target.id); }
@@ -1051,6 +1169,7 @@ export class Reader {
         const m = popMenu(px, py, INK_COLORS.map(c => ({ label: '●', onclick: async () => { const ch = list().filter(a => a.kind === 'ink').map(a => Object.assign(JSON.parse(JSON.stringify(a)), { color: c })); await S.putAnnotsGroup(ch); } })));
         [...m.querySelectorAll('button')].forEach((b, i) => { b.style.color = INK_COLORS[i]; b.style.fontSize = '22px'; });
       } } : null,
+      { icon: 'link', label: 'Criar link a partir da seleção', onclick: () => { const bb = sel.bbox; const s0 = sel.s; v.clearSelection(); this.linkBuilder(v, { pageKey: s0.p.key, rects: [[bb[0], bb[1], bb[2], bb[3]]], text: '' }); } },
       { icon: 'trash', label: 'Apagar', danger: true, onclick: async () => { await S.delAnnots(list()); v.clearSelection(); } },
     ];
     const m = popMenu(Math.min(px, innerWidth - 260), Math.max(70, py), items);
@@ -1102,16 +1221,24 @@ export class Reader {
     popMenu(x, y, [
       { icon: 'plus', label: 'Nova página depois desta', onclick: () => this.nbAddPage(v, p.index) },
       { icon: 'copy', label: 'Duplicar página', onclick: async () => { await NB.duplicatePage(v.doc, p.index); await this.nbRefresh(v); } },
-      { icon: 'pages', label: 'Modelo da página…', onclick: () => popMenu(x, y, NB.TEMPLATES.map(([id, l]) => ({ label: (p.tpl === id ? '✓ ' : '') + l, onclick: async () => { await NB.setTemplate(v.doc, p.index, id); await this.nbRefresh(v); } }))) },
+      p.tpl === 'cover' ? { icon: 'notebook', label: 'Cor da capa…', onclick: () => this.coverMenu(v.doc, x, y, () => this.nbRefresh(v)) } : null,
+      p.tpl === 'cover' ? null : { icon: 'pages', label: 'Modelo da página…', onclick: () => popMenu(x, y, NB.TEMPLATES.map(([id, l]) => ({ label: (p.tpl === id ? '✓ ' : '') + l, onclick: async () => { await NB.setTemplate(v.doc, p.index, id); await this.nbRefresh(v); } }))) },
       p.index > 0 ? { icon: 'back', label: 'Mover para cima', onclick: async () => { await NB.movePage(v.doc, p.index, -1); await this.nbRefresh(v); v.goTo(p.key, 0, { noHist: true }); } } : null,
       p.index < v.pages.length - 1 ? { icon: 'fwd', label: 'Mover para baixo', onclick: async () => { await NB.movePage(v.doc, p.index, 1); await this.nbRefresh(v); v.goTo(p.key, 0, { noHist: true }); } } : null,
       { icon: 'bookmark', label: bm ? 'Remover marcador' : 'Marcar esta página', onclick: () => this.toggleBookmark(p.key, v) },
       '-',
       { icon: 'trash', label: 'Apagar página', danger: true, onclick: async () => {
-        if (!(await confirmBox('Apagar página', 'Apagar a página ' + p.n + ' e tudo o que há nela?', 'Apagar', true))) return;
+        if (!(await confirmBox('Apagar página', 'Apagar ' + (p.n ? 'a página ' + p.n : 'a capa') + ' e tudo o que há nela?', 'Apagar', true))) return;
         await NB.deletePage(v.doc, p.index); await this.nbRefresh(v);
       } },
     ]);
+  }
+
+  coverMenu(doc, x, y, after) {
+    const m = popMenu(x, y, NB.COVER_COLORS.map(([c, l]) => ({ label: (doc.coverColor === c ? '✓ ' : '') + l, onclick: async () => { await NB.setCover(doc, c); if (after) await after(); } }))
+      .concat(['-', { label: 'Sem capa', onclick: async () => { await NB.setCover(doc, ''); if (after) await after(); } }]));
+    [...m.querySelectorAll('button')].slice(0, NB.COVER_COLORS.length).forEach((b, i) => { b.prepend(h('span.swatch', { style: { background: NB.COVER_COLORS[i][0] } })); });
+    return m;
   }
 
   // ---------- menu "mais" ----------
@@ -1120,6 +1247,7 @@ export class Reader {
     const nb = NB.isNotebook(d);
     popMenu(e.clientX - 200, e.clientY + 10, [
       nb ? { icon: 'plus', label: 'Nova página no fim', onclick: () => this.nbAddPage(this.active, this.active.pages.length - 1) } : { icon: 'doc', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
+      nb ? { icon: 'notebook', label: 'Capa do caderno…', onclick: () => this.coverMenu(d, e.clientX - 200, e.clientY + 10, () => this.nbRefresh(this.active)) } : null,
       { icon: 'ai', label: 'Resumo das minhas anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
       { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => nb ? openNotebookExport(d) : openObsidianDialog(d) },
       nb ? null : { icon: 'speak', label: 'Ler a página atual em voz alta', onclick: async () => { const k = this.active.currentKey(); if (k[0] === 'p') speak(await pageText(this.active.hd, pageNum(k))); } },
