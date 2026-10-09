@@ -1,10 +1,11 @@
-# Leitor de Pesquisa 0.6.0
+# Leitor de Pesquisa 0.7.0
 
-App de leitura de PDF para o Galaxy Tab S11 (funciona no Chrome e pode ser instalado como app).
+App de leitura de PDF para tablet, celular, Fold, DeX, computador e Boox (funciona no Chrome e pode ser instalado como app).
 Seus PDFs, anotações, áudios e o Digest ficam guardados no aparelho (no armazenamento do Chrome) e, se você ligar a sincronização, numa pasta do **seu** Google Drive.
 
 ## O que tem nesta versão
 
+- **Novo na 0.7.0:** o app se ajusta ao aparelho (celular e Fold fechado, Fold aberto e tablet, DeX e computador, Boox com e-ink P&B ou colorido); várias janelas sincronizadas na hora (DeX: uma no tablet e outras no monitor; link abre na outra janela); arrastar figura recortada ou texto selecionado para um caderno ou texto (tela dividida e entre janelas); e-ink com página que vira (toques, deslize, botões), limpeza da tela, modo colunas, página inteira; modo artigo (texto do PDF em parágrafos, letra ajustável); caneta rápida da Boox (experimental, no app Android); PDFs da sincronização baixados só ao abrir (opcional); links em tabelas só azuis e sublinhados.
 - **Novo na 0.6.0:** escolha da IA (Claude ou Gemini) com custo por consulta; resumo por capítulo de livros e artigos longos; cartão do artigo citado (título, autores, resumo, citações) com “Ler depois” e aba “Para ler” nos projetos; aba Digest nos projetos; tela dividida com PDF, caderno ou texto (bordas cortadas, links do outro lado, troca rápida por lado); tradução gratuita em janela; links do caderno com símbolo e sublinhado; tamanho das imagens no texto; tabela por número.
 - **Novo na 0.5.0:** documento de texto em Markdown (equações numeradas, tabelas, imagens/GIF, vídeo do YouTube, notas de voz, caixas de nota, links e sumário automático); botões (n) e ref que numeram e citam equações sozinhos; laço em forma livre que pega tudo o que está dentro; botão da S Pen e ponta-borracha apagam; GIFs animados no caderno.
 - **Novo na 0.4.0:** sincronização pelo Google Drive (web e Android, com login da conta Google); capa estilo "composition book" com cor à escolha; barra de texto no topo e largura da caixa ajustável; painel de símbolos de matemática; links funcionando nos cadernos; troca rápida entre arquivos (dois dedos ou botão ⇆); filtro por projeto no Digest.

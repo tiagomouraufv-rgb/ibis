@@ -13,6 +13,7 @@ import { digestPanel } from './digestui.js';
 import { openExternal, openUri } from './platform.js';
 import { translatePop, wikiPop } from './lookup.js';
 import { openPdf, pageList, pageLabel } from './pdfdoc.js';
+import { makeDraggable, quoteMd, sourceLink } from './dnd.js';
 
 export function isText(doc) { return !!doc && doc.kind === 'text'; }
 
@@ -100,7 +101,7 @@ export class TextScreen extends MdEditBase {
       btn('list', '', () => this.toggleSide(), { title: 'Painel lateral: sumário, ligações, busca', iconOnly: true }),
       h('div.rtitles', this.titleEl, this.infoEl),
       this.fmtSlot,
-      btn('split', '', () => this.app.split ? this.app.exitSplit(this.sideIdx) : this.app.chooseSplit(this.doc), { title: 'Dividir a tela / fechar a divisão', iconOnly: true }),
+      btn('split', '', () => this.app.split ? this.app.exitSplit(this.sideIdx) : this.app.chooseSplit(this.doc), { title: 'Dividir a tela / fechar a divisão', iconOnly: true, cls: 'ibtn no-eink' }),
       btn('swap', '', () => this.app.reader.recentMenu(null, this.doc && this.doc.id, this.sideIdx), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
       btn('upload', 'Exportar', () => openTextExport(this.doc), { cls: 'pbtn' }),
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }));
@@ -434,6 +435,29 @@ export class TextScreen extends MdEditBase {
 
   insertTable(rows, cols) { if (this.cur) super.insertTable(rows, cols); else this.addBlock(this.tableText(rows, cols)); }
 
+  // figura ou trecho arrastado para cá: entra entre os blocos, onde foi solto
+  async dropAt(x, y, p) {
+    if (this.cur) this.commit();
+    let at = this.blocks.length;
+    for (const el of this.article.querySelectorAll('.tblock')) { const r = el.getBoundingClientRect(); if (y < r.top + r.height / 2) { at = +el.dataset.i; break; } }
+    const src = p.docId && p.docId !== this.doc.id ? sourceLink(p) : '';
+    this.snapshot();
+    if (p.kind === 'image' && p.blob) {
+      let im;
+      try { im = await NB.storeImage(p.blob); } catch (e) { toast(e.message); return; }
+      this.blocks.splice(at, 0, '![](img:' + im.fileId + ')', ...(src ? ['*Fonte: ' + src + '*'] : []));
+      this.renderAll(); await this.saveNow(); this.snapshot();
+      this.selectImage(im.fileId);
+      toast('Figura inserida no texto.');
+      return;
+    }
+    if (p.text) {
+      this.blocks.splice(at, 0, p.docId === this.doc.id ? '> ' + p.text : quoteMd(p));
+      this.renderAll(); await this.saveNow(); this.snapshot();
+      toast('Trecho inserido no texto.');
+    }
+  }
+
   // ---------- links ----------
   async linkMenu() {
     const ta = this.ta; const s = ta.selectionStart, e = ta.selectionEnd;
@@ -451,7 +475,8 @@ export class TextScreen extends MdEditBase {
     const g = parseGo(href);
     if (g) {
       if (this.app.split) { this.app.openInOther(this.sideIdx, { docId: g.docId, pageKey: g.key || 'top', y: g.y }); return; }
-      if (g.docId === this.doc.id) this.scrollToKey(g.key || 'top', true); else this.app.openAt(g.docId, g.key, g.y);
+      if (g.docId === this.doc.id) { this.scrollToKey(g.key || 'top', true); return; }
+      this.app.openElsewhere({ docId: g.docId, pageKey: g.key || 'top', y: g.y }).then(done => { if (!done) this.app.openAt(g.docId, g.key, g.y); });
       return;
     }
     if (/^#dg=/.test(href)) { this.app.showDigest(href.slice(4)); return; }
@@ -577,6 +602,10 @@ export class TextScreen extends MdEditBase {
       b('copy', 'Copiar', () => { copyText(text); toast('Copiado.'); }),
       b('translate', 'Traduzir', () => translatePop(text, rect, this.doc)),
       b('wiki', 'Wikipédia', () => wikiPop(text, rect)));
+    const dg = h('button.mbtn', { type: 'button', title: 'Arraste o trecho para um caderno ou outro texto' }, icon('grip', 18), h('span', 'Arrastar'));
+    makeDraggable(dg, () => ({ kind: 'text', text, docId: this.doc.id, pageKey: this.nearestHeading(i), y: 0, title: S.docTitle(this.doc), label: pageLabel(this.nearestHeading(i), this.doc) }));
+    dg.addEventListener('pointerdown', e => (e.pointerType !== 'mouse' || window.AndroidBridge) && setTimeout(() => this.hideSel(), 60));
+    this.selMenu.appendChild(dg);
     this.selMenu.classList.add('show');
     const mr = this.selMenu.getBoundingClientRect();
     this.selMenu.style.left = Math.max(8, Math.min(innerWidth - mr.width - 8, rect.left + rect.width / 2 - mr.width / 2)) + 'px';
@@ -681,6 +710,7 @@ export class TextScreen extends MdEditBase {
       { icon: 'list', label: 'Sumário, ligações e busca', onclick: () => this.toggleSide() },
       { icon: 'folder', label: 'Projetos…', onclick: async () => { const { openProjectsDialog } = await import('./dialogs.js'); openProjectsDialog(this.doc); } },
       { icon: 'digest', label: 'Abrir o Digest', onclick: () => this.app.showDigest() },
+      document.documentElement.dataset.eink ? null : { icon: 'pages', label: 'Abrir em nova janela (DeX, computador)', onclick: () => this.app.newWindow(this.doc.id) },
       { icon: 'gear', label: 'Configurações', onclick: () => this.app.openSettings() },
     ]);
   }

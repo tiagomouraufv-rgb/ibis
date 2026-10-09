@@ -319,11 +319,25 @@ export async function openSettings(tab) {
   const cmodel = h('select', AI.CLAUDE_MODELS.map(([v, l]) => h('option', { value: v }, l))); cmodel.value = st.claudeModel || 'claude-sonnet-5-5';
   const refp = h('input', { type: 'checkbox' }); refp.checked = st.refPopup !== false;
   const cropS = h('input', { type: 'checkbox' }); cropS.checked = st.cropInSplit !== false;
+  const sel = (opts, v) => { const x = h('select', opts.map(([k, l]) => h('option', { value: k }, l))); x.value = v; return x; };
+  const chk = v => { const x = h('input', { type: 'checkbox' }); x.checked = !!v; return x; };
+  const eMode = sel([['auto', 'Automático (liga no Boox)'], ['on', 'Ligado'], ['off', 'Desligado']], st.einkMode || 'auto');
+  const eProf = sel([['auto', 'Automático'], ['bw', 'Preto e branco (Go 7)'], ['color', 'Cores (Go Color 7)']], st.einkProfile || 'auto');
+  const fPen = chk(st.fastPen !== false), vKeys = chk(st.einkVolumeKeys !== false), lazy = chk(st.syncLazyPdf), otherW = chk(st.linksOtherWindow !== false);
+  const eRef = h('input', { type: 'number', min: 0, max: 50 }); eRef.value = st.einkRefresh == null ? 6 : st.einkRefresh;
   const panes = {
     geral: h('div',
       h('h3', 'Caneta'),
       h('label.check', pen, h('span', 'Só a S Pen escreve (o dedo arrasta e dá zoom)')),
       h('label.check', penEr, h('span', 'Botão da S Pen e ponta-borracha da caneta (ex.: reMarkable 2) apagam')),
+      h('h3', 'Aparelho e tela'),
+      h('label.field', h('span', 'Modo e-ink (tinta eletrônica)'), eMode),
+      h('label.field', h('span', 'Perfil do e-ink'), eProf),
+      h('label.check', fPen, h('span', 'Caneta rápida no Boox (experimental: usa o kit da Onyx; desligue se der problema)')),
+      h('label.field', h('span', 'E-ink: atualizar a tela inteira a cada quantas páginas (0 = nunca)'), eRef),
+      h('label.check', vKeys, h('span', 'E-ink: botões de volume também viram a página')),
+      h('label.check', lazy, h('span', 'Baixar os PDFs da sincronização só quando abrir (bom para o celular)')),
+      h('label.check', otherW, h('span', 'Com várias janelas abertas, os links abrem na outra janela')),
       h('h3', 'Tela dividida'),
       h('label.check', cropS, h('span', 'Nos PDFs, cortar as bordas brancas para o texto ocupar a largura do painel (como na Boox)')),
       h('h3', 'Referências'),
@@ -370,7 +384,7 @@ export async function openSettings(tab) {
   modal('Configurações', h('div.settings', tabRow, holder), [
     { label: 'Cancelar' },
     { label: 'Salvar', primary: true, onclick: async c => {
-      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, theme: theme.value, ttsRate: +rate.value };
+      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, einkMode: eMode.value, einkProfile: eProf.value, fastPen: fPen.checked, einkVolumeKeys: vKeys.checked, syncLazyPdf: lazy.checked, linksOtherWindow: otherW.checked, einkRefresh: Math.max(0, Math.min(50, +eRef.value || 0)), theme: theme.value, ttsRate: +rate.value };
       for (const k in f) p[k] = f[k].value.trim();
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
@@ -434,6 +448,32 @@ function guideNodes() {
         'O PDF abre no leitor. Ele lembra onde você parou.',
         'Use a barra da esquerda para escolher a ferramenta: Ler/selecionar, Caneta, Marca-texto, Borracha, Link e Nota.',
         'O botão ☰ no topo abre o painel lateral: Sumário, Páginas, Anotações, Busca e Ligações.')),
+    sec('Celular, Fold, tablet, DeX e computador',
+      ul('O app se ajusta sozinho à tela. Celular (e o Fold fechado): biblioteca no menu ☰, ferramentas numa barra embaixo, e o que não cabe no topo vai para o menu ⋯.',
+        'Fold aberto e tablet: o app completo, com tela dividida.',
+        'DeX e computador (mouse): o app completo, com menus pelo botão direito do mouse nos cartões da biblioteca.',
+        'Na tela estreita do celular a tela dividida fica desligada; abra o Fold ou use o DeX.')),
+    sec('Várias janelas (DeX, computador)',
+      ol('No documento, toque em ⋯ > “Abrir em nova janela”. No DeX com monitor, a janela nova abre no monitor (se o sistema deixar); no computador, abre numa nova aba/janela do navegador.',
+        'As janelas ficam iguais na hora: o que você escreve ou destaca numa aparece na outra.',
+        'Com duas janelas abertas, um link abre na outra janela (a usada por último). Para desligar: Configurações > Geral > “os links abrem na outra janela”.',
+        'Cada janela fecha sozinha com o “voltar” quando não há nada aberto nela.')),
+    sec('Arrastar figura ou texto para o caderno ou o texto',
+      ul('Recorte uma figura (ferramenta Recortar): na janela que aparece, segure a figura e arraste até a página de um caderno ou até um texto.',
+        'Texto selecionado: no menu da seleção, toque em “Arrastar” e arraste até o caderno ou o texto. Entra como citação, com o link de volta à página de origem.',
+        'Funciona na tela dividida e, no app Android, entre janelas do DeX. No computador, arraste com o mouse entre as janelas.')),
+    sec('Boox (e-ink): Go 7 e Go Color 7',
+      ul('O modo e-ink liga sozinho numa Boox (ou em Configurações > Geral > Aparelho e tela). O perfil P&B ou colorido também é automático e pode ser escolhido ali.',
+        'No e-ink a página vira em vez de rolar: toque na direita (avança) ou na esquerda (volta), deslize o dedo, use os botões ‹ › do topo, as teclas de página ou os botões de volume (dá para desligar).',
+        'A cada algumas viradas a tela pisca para limpar os “fantasmas” (o número fica em Configurações). Para limpar na hora: ⋯ > “Limpar a tela agora”.',
+        '⋯ > “Modo colunas”: para artigos em duas colunas. Corta as bordas e mostra uma coluna por vez, descendo a da esquerda e depois a da direita.',
+        '⋯ > “Página inteira na tela”: cada página cabe inteira, sem rolar dentro dela.',
+        'No e-ink ficam desligados: tela dividida, novas janelas, animação de GIF (a imagem fica parada) e vídeo (fica só o link).',
+        'Caneta rápida (experimental): no app Android, com Caneta, Marca-texto ou Borracha, o traço aparece na hora pelo sistema da Boox. Se não funcionar, o app avisa e volta para a caneta comum; dá para desligar em Configurações.')),
+    sec('Modo artigo',
+      ul('No PDF, toque no ícone de página com linhas (ou ⋯ > “Modo artigo”). O texto vira parágrafos corridos, sem cabeçalhos e números de página, com letra ajustável em A− e A+.',
+        'As figuras e tabelas continuam no PDF: toque no marcador “p. N” para voltar àquela página.',
+        'Funciona em qualquer aparelho, e é o jeito mais confortável de ler artigos no celular e no e-ink. PDFs escaneados (só imagem) não têm texto para isso.')),
     sec('Caneta (S Pen) e dedo',
       ul('Com Caneta, Marca-texto ou Borracha, só a S Pen escreve. O dedo arrasta e dois dedos dão zoom.',
         'Apagar sem trocar de ferramenta: use a ponta-borracha de canetas que têm uma (como a do reMarkable 2), ou, no app Android, segure o botão lateral da S Pen enquanto passa a ponta no traço. Funciona em qualquer ferramenta. Dá para desligar na aba Geral.',

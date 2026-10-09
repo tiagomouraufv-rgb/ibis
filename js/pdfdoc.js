@@ -8,8 +8,12 @@ export { pdfjs };
 const cache = new Map(); // docId -> Promise<PdfHandle>
 
 export async function loadPdfBytes(doc) {
-  const f = await db.get('files', doc.fileId);
-  if (!f) throw new Error('Arquivo do PDF não encontrado no aparelho.');
+  let f = await db.get('files', doc.fileId);
+  if (!f) {
+    // modo "baixar só quando abrir": busca o PDF no Google Drive agora
+    try { const SY = await import('./sync.js'); if (await SY.fetchFile(doc.fileId)) f = await db.get('files', doc.fileId); } catch (e) { console.warn(e); }
+  }
+  if (!f) throw new Error('Arquivo do PDF não encontrado no aparelho (sem internet para baixar da sincronização?).');
   return new Uint8Array(await f.blob.arrayBuffer());
 }
 

@@ -13,8 +13,12 @@ import { downloadBlob } from './util.js';
 import { isAndroidApp, b64ToBytes } from './platform.js';
 import { startAutoSync } from './sync.js';
 import { TextScreen } from './textdoc.js';
+import { watchForm, form } from './form.js';
+import * as WIN from './windows.js';
+import { bindDrop, noDrop } from './dnd.js';
+import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 
 class App {
   constructor() {
@@ -35,6 +39,7 @@ class App {
 
   async start() {
     await S.deviceId();
+    await watchForm();
     const st = await S.settings();
     this.applyTheme(st);
     S.on('settings', s => this.applyTheme(s));
@@ -55,6 +60,16 @@ class App {
     this.indexAll();
     document.getElementById('ver').textContent = 'v' + VERSION + (isAndroidApp ? ' · Android' : '');
     startAutoSync().catch(e => console.warn(e));
+    this.initWindows();
+    bindDrop();
+    initFastPen(this);
+    syncPageKeys();
+    S.on('settings', () => syncPageKeys());
+    // ficou e-ink (ou mudou de forma): sem tela dividida no e-ink
+    S.on('form', f => { syncPageKeys(); if (f.eink && this.split) this.exitSplit(this.side); });
+    document.addEventListener('keydown', e => this.onPageKey(e));
+    const qd = new URLSearchParams(location.search).get('doc');
+    if (qd) this.openDoc(qd);
     if (isAndroidApp) {
       window.__nativePending = () => this.takeNativeFile();
       this.takeNativeFile();
@@ -98,10 +113,80 @@ class App {
     return false;
   }
 
+  // ---------- virar página: botões do aparelho, teclado, controle de slides ----------
+  pageKey(dir) {
+    if (this.article) { this.article.turn(dir); return; }
+    if (document.querySelector('.modal-back')) return;
+    const sc = this.split ? this.screenOn(this.side) : this.screenOn(0);
+    if (!sc) return;
+    if (sc.turn) { sc.turn(dir); return; }
+    if (sc.pane) turnScroller(sc.pane, dir);
+  }
+  onPageKey(e) {
+    if (this.article || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    let dir = 0;
+    if (e.key === 'PageDown') dir = 1; else if (e.key === 'PageUp') dir = -1;
+    else if (isEink() && (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ')) dir = 1;
+    else if (isEink() && (e.key === 'ArrowLeft' || e.key === 'ArrowUp')) dir = -1;
+    if (!dir) return;
+    const sc = this.split ? this.screenOn(this.side) : this.screenOn(0);
+    if (!sc || !(sc.turn || sc.pane) || (!isEink() && !sc.turn)) return;
+    if (!isEink() && sc.active && !sc.active.paged) return;   // fora do e-ink, PageUp/PageDown rolam normalmente
+    e.preventDefault();
+    this.pageKey(dir);
+  }
+
   applyTheme(st) {
     const dark = st.theme === 'escuro' || (st.theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   }
+
+  // ---------- soltar figura/texto arrastado ----------
+  async dropAt(x, y, p) {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return noDrop();
+    for (const r of this.readers) {
+      if (!r.root.isConnected || !r.root.contains(el)) continue;
+      for (const v of r.viewers) {
+        const hit = v.slotAt(x, y);
+        if (hit && v.isNb) return r.dropOnNotebook(v, hit, p);
+      }
+      return noDrop();
+    }
+    for (const t of this.texts) if (t.root.isConnected && t.root.contains(el)) return t.dropAt(x, y, p);
+    noDrop();
+  }
+
+  // ---------- várias janelas ----------
+  initWindows() {
+    WIN.initWindows(m => this.onWinMsg(m));
+    for (const ev of ['annots', 'docs', 'digest', 'projects', 'readLater', 'recordings']) {
+      S.on(ev, p => { if (this.fromWin) return; WIN.post({ t: 'chg', ev, docId: (p && (p.docId || (ev === 'docs' && p.id))) || '' }); });
+    }
+  }
+  async onWinMsg(m) {
+    if (m.t === 'open') { this.openDoc(m.docId, { key: m.key, y: m.y || 0 }); return; }
+    if (m.t !== 'chg') return;
+    this.fromWin = true;
+    try {
+      if (m.ev === 'annots') { S.resetAnnCache(m.docId || null); S.emit('annots', { docId: m.docId, remote: true }); }
+      else if (m.ev === 'docs') { if (m.docId) { const d = await S.getDoc(m.docId); if (d) S.emit('docRemote', d); } S.emit('docs', null); }
+      else if (m.ev === 'digest') { S.resetCaches(); S.emit('digest', await S.digest()); }
+      else if (m.ev === 'readLater') { S.resetCaches(); S.emit('readLater', await S.readLater()); }
+      else S.emit(m.ev, null);
+    } finally { this.fromWin = false; }
+  }
+  // link: abre na outra janela, se houver uma e a opção estiver ligada
+  async openElsewhere(target) {
+    const st = await S.settings();
+    const other = st.linksOtherWindow !== false ? WIN.otherWindow() : null;
+    if (!other) return false;
+    WIN.post({ t: 'open', to: other, docId: target.docId, key: target.pageKey, y: target.y || 0 });
+    toast('Aberto na outra janela.', 1500);
+    return true;
+  }
+  newWindow(docId) { if (!WIN.openNewWindow(docId)) toast('O navegador bloqueou a nova janela. Permita pop-ups para este site.'); }
 
   // ---------- tela dividida ----------
   setSide(i) {
@@ -125,6 +210,8 @@ class App {
     if (t) { if (t.cur) t.commit(); t.hideSel(); t.imgDeselect && t.imgDeselect(); t.savePos(); }
   }
   async chooseSplit(curDoc) {
+    if (isEink()) { toast('No e-ink a tela dividida fica desligada.'); return; }
+    if (form.form === 'phone') { toast('Na tela estreita do celular a tela dividida fica desligada. Abra o Fold ou use o DeX.'); return; }
     const docs = await S.allDocs();
     const rec = (await this.reader.recentDocs()).filter(d => !curDoc || d.id !== curDoc.id);
     const rest = docs.filter(d => (!curDoc || d.id !== curDoc.id) && !rec.some(r => r.id === d.id));

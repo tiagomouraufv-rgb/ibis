@@ -6,6 +6,7 @@ import { registerTextLayer, unregisterTextLayer } from './textsel.js';
 import { hydrate } from './embeds.js';
 import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
 import { headings } from './md.js';
+import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif } from './eink.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -55,9 +56,35 @@ export class Viewer {
     this.ro.observe(this.scroller);
     this.offAnn = S.on('annots', e => { if (this.doc && e.docId === this.doc.id) this.redrawOverlays(e.pageKey); });
     this.scroller.addEventListener('scroll', () => this.onScroll(), { passive: true });
+    // celular/tablet/e-ink mudou (Fold aberto, Boox): refaz o modo e o encaixe da página
+    this.offForm = S.on('form', () => { if (!this.doc) return; this.applyMode(); this.relayout(true); });
   }
 
-  destroy() { this.offAnn(); this.io.disconnect(); this.ro.disconnect(); this.el.remove(); }
+  // e-ink: a página vira (não rola)
+  get paged() { return isEink(); }
+  turn(dir) {
+    const ok = turnViewer(this, dir);
+    if (ok) this.app.onNav && this.app.onNav(this);
+    return ok;
+  }
+  // artigos em duas colunas: zoom numa coluna por vez, descendo a da esquerda e depois a da direita
+  async setColumns(on) {
+    if (!this.hd) return;
+    const k = this.currentKey();
+    this.columns = !!on;
+    if (on && !this.cropBox) await this.setCrop(true);
+    const W = this.scroller.clientWidth, avail = Math.max(200, W - 28);
+    this.zoom = on ? (2 * W) / avail * 0.985 : 1;
+    this.relayout(false);
+    requestAnimationFrame(() => {
+      const s = this.slots.get(k);
+      if (!s) return;
+      this.scroller.scrollTop = s.wrap.offsetTop;
+      this.scroller.scrollLeft = on ? s.wrap.offsetLeft : 0;
+    });
+  }
+
+  destroy() { this.offAnn(); this.offForm && this.offForm(); this.io.disconnect(); this.ro.disconnect(); this.el.remove(); }
 
   async open(doc, at) {
     this.cropBox = null;
@@ -109,6 +136,12 @@ export class Viewer {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
     const maxW = Math.max(...this.pages.map(p => p.w * (this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1)), 1) * (anyMargin ? 1 + MARGIN_FRAC : 1);
     const avail = Math.max(200, this.scroller.clientWidth - 28);
+    // e-ink com "página inteira": a página cabe na altura da tela (sem rolar dentro dela)
+    if (this.paged && (this.app.settings || {}).pageFit && !this.columns) {
+      const maxH = Math.max(...this.pages.map(p => p.h * (this.cropBox && p.kind === 'pdf' ? this.cropBox[3] : 1)), 1);
+      const availH = Math.max(200, this.scroller.clientHeight - 40);
+      return Math.min(avail / maxW, availH / maxH);
+    }
     return avail / maxW;
   }
 
@@ -301,6 +334,7 @@ export class Viewer {
         im.style.left = `calc(var(--s) * ${a.x}px)`; im.style.top = `calc(var(--s) * ${a.y}px)`;
         im.style.width = `calc(var(--s) * ${a.w}px)`; im.style.height = `calc(var(--s) * ${a.h}px)`;
         s.iml.appendChild(im);
+        freezeIfGif(im);
       }
     }
     const hl = list.filter(a => a.kind === 'hl');
@@ -604,7 +638,8 @@ export class Viewer {
     this.el.classList.toggle('drawmode', draw);
     this.el.classList.toggle('textmode', t === 'text');
     this.el.classList.toggle('nbmode', !!(this.doc && this.isNb));
-    this.scroller.style.touchAction = draw ? 'none' : 'pan-x pan-y';
+    this.scroller.classList.toggle('paged', this.paged);
+    this.scroller.style.touchAction = draw || this.paged ? 'none' : 'pan-x pan-y';
   }
 
   slotAt(clientX, clientY) {
@@ -637,6 +672,7 @@ export class Viewer {
     sc.addEventListener('touchend', e => { if (readMode() && e.touches.length < 2 && this.pinch) this.pinchEnd(); }, { passive: true });
     sc.addEventListener('wheel', e => {
       if (e.ctrlKey) { e.preventDefault(); const r = sc.getBoundingClientRect(); this.setZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 0.9), { x: e.clientX - r.left, y: e.clientY - r.top }); }
+      else if (this.paged) { e.preventDefault(); const now = Date.now(); if (now - (this.wheelT || 0) > 350 && Math.abs(e.deltaY) > 4) { this.wheelT = now; this.turn(e.deltaY > 0 ? 1 : -1); } }
     }, { passive: false });
   }
 
@@ -664,6 +700,7 @@ export class Viewer {
     this.app.setActiveViewer(this);
     if (e.pointerType === 'touch' && this.penDown) return;             // palma da mão encostada enquanto a caneta escreve
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now(), type: e.pointerType, x0: e.clientX, y0: e.clientY });
+    if (this.pointers.size > 1) for (const q of this.pointers.values()) q.multi = true;
     const hit = this.slotAt(e.clientX, e.clientY);
     if (e.pointerType === 'pen') this.lastPen = Date.now();
     // botão da S Pen apertado ou ponta-borracha (ex.: caneta do reMarkable 2): apaga, em qualquer ferramenta
@@ -799,6 +836,8 @@ export class Viewer {
       if (this.pointers.size >= 2 && this.pinch) {
         const pts = [...this.pointers.values()].slice(0, 2).map(p => ({ clientX: p.x, clientY: p.y }));
         this.pinchMove(pts);
+      } else if (this.panOp && this.paged) {
+        // e-ink: o dedo não arrasta a página; o deslize vira a página ao soltar
       } else if (this.panOp) {
         const now = performance.now();
         const dx = e.clientX - this.panOp.x, dy = e.clientY - this.panOp.y;
@@ -852,6 +891,12 @@ export class Viewer {
       return;
     }
     if (this.pinch && this.pointers.size < 2 && this.app.tool !== 'read') { this.pinchEnd(); return; }
+    if (this.panOp && e.pointerType === 'touch' && this.paged) {
+      this.panOp = null;
+      const d = pp && !pp.multi ? swipeDir(e.clientX - pp.x0, e.clientY - pp.y0) : 0;
+      if (d && !cancelled) this.turn(d);
+      return;
+    }
     if (this.panOp && e.pointerType === 'touch') {
       const p = this.panOp; this.panOp = null;
       let vx = p.vx * 16, vy = p.vy * 16;
@@ -875,8 +920,51 @@ export class Viewer {
       if (sel && !sel.isCollapsed && sel.toString().trim() && !(e.target.closest && e.target.closest('.tbox'))) return;
       const hit = this.slotAt(e.clientX, e.clientY);
       if (hit && this.app.picking) { this.app.picking(this, hit); return; }
-      if (hit) { const target = this.hitTest(hit); if (target) this.app.onTapTarget(this, target, e.clientX, e.clientY); }
+      if (hit) { const target = this.hitTest(hit); if (target) { this.app.onTapTarget(this, target, e.clientX, e.clientY); return; } }
+      // e-ink: toque na esquerda volta, na direita avança
+      if (this.paged) { const z = tapZone(this.scroller, e.clientX); if (z) this.turn(z); }
+      return;
     }
+    // e-ink, modo leitura: deslizar o dedo vira a página
+    if (this.paged && this.app.tool === 'read' && pp && !pp.multi && !cancelled && e.pointerType === 'touch' && Date.now() - pp.t < 900) {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+      const d = swipeDir(e.clientX - pp.x0, e.clientY - pp.y0);
+      if (d) this.turn(d);
+    }
+  }
+
+  // traço vindo da caneta rápida da Boox (pontos em coordenadas da tela)
+  async fastStroke(o) {
+    const pts = (o && o.pts) || [];
+    if (!pts.length || !this.doc) return;
+    const hit = this.slotAt(pts[0][0], pts[0][1]);
+    if (!hit) return;
+    const s = hit.s, r = s.slot.getBoundingClientRect();
+    const maxX = s.p.w * (this.hasMargin(s.p.key) ? 1 + MARGIN_FRAC : 1);
+    const maxP = Math.max(...pts.map(q => q[2] || 0), 0);
+    const t0 = pts[0][3] || 0;
+    const loc = pts.map(q => [
+      +Math.max(0, Math.min(maxX, (q[0] - r.left) / this.scale)).toFixed(2),
+      +Math.max(0, Math.min(s.p.h, (q[1] - r.top) / this.scale)).toFixed(2),
+      +(maxP > 1 ? Math.min(1, (q[2] || 0) / maxP) * 0.8 : (q[2] || 0.5)).toFixed(2),
+      Math.max(0, Math.round((q[3] || 0) - t0))]);
+    if (o.erase || this.app.tool === 'eraser') {
+      this.op = { type: 'erase', s, ids: new Set() };
+      for (const q of loc) this.eraseAt({ s, x: q[0], y: q[1] });
+      const ids = this.op.ids; this.op = null;
+      const del = (this.anns || []).filter(a => ids.has(a.id));
+      if (del.length) await S.delAnnots(del);
+      return;
+    }
+    const tool = this.app.tool === 'marker' ? 'marker' : 'pen';
+    const st = this.app.settings || {};
+    const a = { kind: 'ink', tool, docId: this.doc.id, pageKey: s.p.key, color: tool === 'marker' ? st.markerColor : st.penColor, width: tool === 'marker' ? 11 : st.penWidth, pts: loc, id: uid('a') };
+    const rec = this.app.recorder && this.app.recorder.stamp(this.doc.id);
+    if (rec) a.rec = rec;
+    this.anns.push(a);
+    this.drawOverlay(s);
+    await S.putAnnot(a);
   }
 
   hitTest(hit) {

@@ -53,7 +53,7 @@ export class Library {
 
   async renderNav() {
     const n = this.nav; clear(n);
-    const item = (id, ic, label, extra) => h('button.navitem', { type: 'button', 'aria-pressed': String(this.view === id), onclick: () => { this.view = id; this.q = ''; this.renderNav(); this.renderMain(); } }, icon(ic, 20), h('span.grow', label), extra || null);
+    const item = (id, ic, label, extra) => h('button.navitem', { type: 'button', 'aria-pressed': String(this.view === id), onclick: () => { this.view = id; this.q = ''; n.classList.remove('open'); this.renderNav(); this.renderMain(); } }, icon(ic, 20), h('span.grow', label), extra || null);
     n.append(h('div.brand', 'Leitor de Pesquisa'),
       item('todos', 'library', 'Biblioteca'),
       h('button.navitem', { type: 'button', onclick: () => this.app.showDigest() }, icon('digest', 20), h('span.grow', 'Digest')),
@@ -72,7 +72,7 @@ export class Library {
     const search = h('input', { type: 'search', placeholder: 'Buscar em tudo: títulos, texto dos PDFs, notas, Digest…', value: this.q });
     const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf', multiple: true, style: { display: 'none' } });
     fileIn.addEventListener('change', () => this.app.importFiles([...fileIn.files], this.view.startsWith('projeto:') ? this.view.slice(8) : null));
-    m.append(h('header.ltop', h('h1', await this.title()), h('div.grow'),
+    m.append(h('header.ltop', h('button.ibtn.menubtn', { type: 'button', 'aria-label': 'Menu', onclick: () => this.nav.classList.toggle('open') }, icon('menu', 22)), h('h1', await this.title()), h('div.grow'),
       h('div.newgroup', { role: 'group', 'aria-label': 'Novo' },
         h('button.ng', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), h('span', 'Abrir PDF')),
         h('button.ng', { type: 'button', onclick: () => this.newText() }, icon('text', 18), h('span', 'Novo texto')),
@@ -151,6 +151,7 @@ export class Library {
           h('div.cmeta', d.kind === 'text' ? 'Texto · ' + plainText(d.md || '').split(/\s+/).filter(Boolean).length + ' palavras' : d.kind === 'notebook' ? 'Caderno · ' + (d.pages || []).length + ' página(s)' : ([d.meta && d.meta.year, d.meta && d.meta.journal].filter(Boolean).join(' · ') || (d.fileName || ''))),
           h('div.cmeta', (d.opened ? 'Aberto em ' + fmtDate(d.opened) : 'Novo') + (n ? ' · ' + n + ' anotações' : ''))),
         h('button.ibtn.cardmenu', { type: 'button', 'aria-label': 'Opções', onclick: e => this.docMenu(d, e.clientX, e.clientY) }, icon('more', 20)));
+      card.addEventListener('contextmenu', e => { e.preventDefault(); this.docMenu(d, e.clientX + 220, e.clientY); });
       grid.appendChild(card);
       this.thumb(d, thumb);
     }
@@ -243,6 +244,7 @@ export class Library {
   docMenu(d, x, y) {
     popMenu(x - 220, y, [
       { icon: 'doc', label: 'Abrir', onclick: () => this.app.openDoc(d.id) },
+      { icon: 'pages', label: 'Abrir em nova janela', onclick: () => this.app.newWindow(d.id) },
       d.kind ? null : { icon: 'tag', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
       { icon: 'folder', label: 'Projetos…', onclick: () => openProjectsDialog(d) },
       d.kind === 'text' ? { icon: 'upload', label: 'Exportar texto (Markdown / Obsidian / PDF)', onclick: () => TX.openTextExport(d) } : d.kind === 'notebook' ? { icon: 'upload', label: 'Exportar caderno (PDF / Obsidian)', onclick: () => openNotebookExport(d) } : { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },

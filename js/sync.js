@@ -336,7 +336,10 @@ async function applyTombs(changed) {
 let running = null;
 export function syncNow(opts = {}) {
   if (running) return running;
-  running = doSync(opts).finally(() => { running = null; interactiveAllowed = false; });
+  const go = () => doSync(opts);
+  // várias janelas do app: só uma sincroniza por vez
+  const locked = navigator.locks && navigator.locks.request ? () => navigator.locks.request('leitor-sync', go) : go;
+  running = locked().finally(() => { running = null; interactiveAllowed = false; });
   return running;
 }
 
@@ -383,10 +386,13 @@ async function doSync({ interactive = false, progress } = {}) {
 
     // 2. arquivos (PDFs, áudios, imagens): baixa os que faltam aqui, envia os que faltam lá
     const need = await neededFiles();
+    const lazy = !!(await S.settings()).syncLazyPdf;
+    const pdfIds = new Set((await db.all('docs')).map(d => d.fileId).filter(Boolean));
     const tombs = await S.tombs();
     const have = new Set(await db.keys('files'));
     for (const id of need) {
       const rf = remote.get('file-' + id);
+      if (!have.has(id) && rf && lazy && pdfIds.has(id)) continue;   // PDF: baixa só quando abrir
       if (!have.has(id) && rf) {
         say('Baixando arquivos… (' + (++stats.files) + ')');
         const blob = await download(rf.id);
@@ -438,6 +444,18 @@ async function doSync({ interactive = false, progress } = {}) {
   return Object.assign({ changed }, stats);
 }
 
+// baixa um arquivo só quando for preciso (modo "baixar só quando abrir")
+export async function fetchFile(id) {
+  const ss = await syncState();
+  if (!ss.enabled || !ss.folderId) return false;
+  const r = await call('GET', API + '/files?spaces=drive&fields=' + q('files(id,mimeType)') + '&q=' + q(`name='file-${id}' and '${ss.folderId}' in parents and trashed=false`));
+  const f = ((await r.json()).files || [])[0];
+  if (!f) return false;
+  const blob = await download(f.id);
+  await db.put('files', { id, blob: f.mimeType && blob.type !== f.mimeType ? new Blob([blob], { type: f.mimeType }) : blob });
+  return true;
+}
+
 // ---------------- ligar/desligar ----------------
 export async function enableSync() {
   const r = await syncNow({ interactive: true });
@@ -473,8 +491,11 @@ export async function startAutoSync() {
   autoOn = true;
   const run = async () => { if ((await syncState()).enabled) syncNow().catch(() => {}); };
   let t = null;
-  S.on('dirty', () => { clearTimeout(t); t = setTimeout(run, 15000); });
+  // no e-ink (bateria e tela lenta) sincroniza com menos frequência
+  const eink = () => !!document.documentElement.dataset.eink;
+  S.on('dirty', () => { clearTimeout(t); t = setTimeout(run, eink() ? 60000 : 15000); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') run(); else { clearTimeout(t); run(); } });
-  setInterval(() => { if (document.visibilityState === 'visible') run(); }, 5 * 60000);
+  let tick = 0;
+  setInterval(() => { tick++; if (document.visibilityState === 'visible' && (!eink() || tick % 3 === 0)) run(); }, 5 * 60000);
   setTimeout(run, 1500);
 }

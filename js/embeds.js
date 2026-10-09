@@ -3,11 +3,14 @@
 import { h, icon } from './util.js';
 import { fileUrl } from './notebook.js';
 import { slugify } from './md.js';
+import { isEink, freezeIfGif } from './eink.js';
 
 const CALLOUTS = { note: 'Nota', nota: 'Nota', info: 'Info', tip: 'Dica', dica: 'Dica', warning: 'Atenção', atencao: 'Atenção', atenção: 'Atenção', question: 'Pergunta', pergunta: 'Pergunta', important: 'Importante', importante: 'Importante', quote: 'Citação', example: 'Exemplo', exemplo: 'Exemplo', todo: 'A fazer' };
 
 export function ytPlayer(id, t) {
   const box = h('div.ytbox');
+  // e-ink não mostra vídeo: fica só o link (abre no navegador/app do YouTube)
+  if (isEink()) { box.classList.add('ytlinkonly'); box.append(h('a.ytlink', { href: 'https://youtu.be/' + id + (t ? '?t=' + t : '') }, '▶ Vídeo do YouTube — abrir ↗')); return box; }
   const thumb = h('button.ytthumb', { type: 'button', 'aria-label': 'Assistir ao vídeo aqui' },
     h('img', { src: 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg', alt: '', loading: 'lazy' }), h('span.ytplay', '▶'));
   thumb.addEventListener('click', ev => {
@@ -36,7 +39,7 @@ export function hydrate(el, ctx = {}) {
     img.removeAttribute('src'); img.classList.add('mdimg'); img.draggable = false;
     img.dataset.file = id;
     if (img.getAttribute('width')) { img.style.width = img.getAttribute('width') + 'px'; img.removeAttribute('width'); }
-    fileUrl(id).then(u => { if (u) img.src = u; else img.alt = '(imagem não encontrada)'; });
+    fileUrl(id).then(u => { if (u) { img.src = u; freezeIfGif(img); } else img.alt = '(imagem não encontrada)'; });
   });
   // vídeo do YouTube: miniatura; toque para assistir aqui mesmo
   el.querySelectorAll('div.yt[data-yt]').forEach(d => {
