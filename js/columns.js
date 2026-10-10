@@ -1,25 +1,10 @@
-// Modo artigo: acha as colunas de texto de cada página do PDF para mostrar uma coluna por vez.
-// Usa a posição das palavras (camada de texto do PDF). Devolve, por página, a lista de recortes na
-// ordem de leitura: [x, y, largura, altura] em frações da página.
+// Modo artigo, como no NeoReader da Boox: as bordas brancas são cortadas e cada página é dividida
+// em colunas iguais (com a divisão no lugar da calha do texto). Cada coluna aparece sozinha, na
+// largura da tela, na ordem de leitura. A divisão pode ser ajustada à mão (1, 2 ou 3 colunas).
+// Recortes em frações da página: [x, y, largura, altura].
 import { getPage } from './pdfdoc.js';
 
-const cache = new Map();   // docId -> Map(n -> boxes)
-
-export async function columnLayout(hd, docId, onProgress) {
-  if (!cache.has(docId)) cache.set(docId, new Map());
-  const m = cache.get(docId);
-  const N = hd.pdf.numPages;
-  for (let n = 1; n <= N; n++) {
-    if (!m.has(n)) {
-      try { m.set(n, await pageColumns(hd, n)); } catch (e) { m.set(n, null); }
-      if (onProgress && n % 4 === 0) onProgress(n, N);
-      if (n % 8 === 0) await new Promise(r => setTimeout(r, 0));
-    }
-  }
-  return m;
-}
-
-export async function pageColumns(hd, n) {
+async function pageItems(hd, n) {
   const pg = await getPage(hd, n);
   const vp = pg.getViewport({ scale: 1 });
   const W = vp.width, H = vp.height;
@@ -29,58 +14,90 @@ export async function pageColumns(hd, n) {
     if (!it.str || !it.str.trim() || !(it.width > 0)) continue;
     const tr = it.transform || [1, 0, 0, 1, 0, 0];
     const fs = Math.hypot(tr[2], tr[3]) || it.height || 8;
-    const x0 = tr[4], x1 = tr[4] + it.width;
     const yb = H - tr[5];
-    items.push({ x0, x1, y0: yb - fs, y1: yb + fs * 0.25, n: it.str.length });
+    items.push({ x0: tr[4] / W, x1: (tr[4] + it.width) / W, y0: (yb - fs) / H, y1: (yb + fs * 0.25) / H, n: it.str.length });
   }
-  if (items.length < 12) return null;
-  // limites do texto
-  const tx0 = Math.min(...items.map(i => i.x0)), tx1 = Math.max(...items.map(i => i.x1));
-  const ty0 = Math.min(...items.map(i => i.y0)), ty1 = Math.max(...items.map(i => i.y1));
-  const tw = tx1 - tx0;
-  if (tw < W * 0.3) return null;
-  // cobertura horizontal (quantos caracteres cobrem cada faixa de x)
-  const B = 200, bins = new Float32Array(B);
+  return items;
+}
+
+// posição (fração da largura da página) da calha entre duas colunas, ou null
+function gutterFrom(items) {
+  if (items.length < 20) return null;
+  const B = 240, bins = new Float32Array(B);
   for (const i of items) {
-    const a = Math.max(0, Math.floor((i.x0 - tx0) / tw * B)), b = Math.min(B - 1, Math.floor((i.x1 - tx0) / tw * B));
+    const a = Math.max(0, Math.floor(i.x0 * B)), b = Math.min(B - 1, Math.floor(i.x1 * B));
     for (let k = a; k <= b; k++) bins[k] += i.n / Math.max(1, b - a + 1);
   }
-  // procura o vão (calha) entre colunas na faixa central
-  const lo = Math.floor(B * 0.3), hi = Math.ceil(B * 0.7);
-  const total = bins.reduce((s, v) => s + v, 0);
-  const avg = total / B;
+  const total = bins.reduce((s, v) => s + v, 0), avg = total / B;
+  const lo = Math.floor(B * 0.33), hi = Math.ceil(B * 0.67);
   let best = null;
+  // a faixa central com menos texto (linhas largas que cruzam a calha só diminuem o vão, não o apagam)
+  const thr = avg * 0.25;
   for (let a = lo; a < hi; a++) {
-    if (bins[a] > avg * 0.06) continue;
-    let b = a; while (b + 1 < hi && bins[b + 1] <= avg * 0.06) b++;
+    if (bins[a] > thr) continue;
+    let b = a; while (b + 1 < hi && bins[b + 1] <= thr) b++;
     if (!best || b - a > best[1] - best[0]) best = [a, b];
     a = b;
   }
   if (!best) return null;
-  const gL = tx0 + best[0] / B * tw, gR = tx0 + (best[1] + 1) / B * tw;
-  const mid = (gL + gR) / 2;
-  // linhas que atravessam a calha (título, resumo, figuras largas): ficam numa faixa inteira no alto
-  const spans = items.filter(i => i.x0 < gL - 4 && i.x1 > gR + 4);
-  const left = items.filter(i => i.x1 <= mid + 2), right = items.filter(i => i.x0 >= mid - 2);
-  const leftChars = left.reduce((s, i) => s + i.n, 0), rightChars = right.reduce((s, i) => s + i.n, 0);
-  if (leftChars < total * 0.2 || rightChars < total * 0.2) return null;   // não é página de duas colunas
-  const padX = W * 0.012, padY = H * 0.01;
-  let headBottom = null;
-  if (spans.length) {
-    const spanBottom = Math.max(...spans.map(i => i.y1));
-    // só conta como cabeçalho se as linhas largas estiverem acima das colunas
-    const colTop = Math.min(...left.concat(right).filter(i => i.y0 > spanBottom - 2).map(i => i.y0), Infinity);
-    if (spanBottom < ty0 + (ty1 - ty0) * 0.6 && isFinite(colTop)) headBottom = (spanBottom + colTop) / 2;
-    else return null;   // colunas misturadas com linhas largas no meio: deixa a página inteira
-  }
-  const top = headBottom !== null ? headBottom : ty0 - padY;
-  const bottom = ty1 + padY;
-  const box = (x0, x1, y0, y1) => [clamp01((x0 - padX) / W), clamp01(y0 / H), Math.min(1, (x1 - x0 + 2 * padX) / W), Math.min(1, (y1 - y0) / H)];
-  const out = [];
-  if (headBottom !== null) out.push(box(tx0, tx1, ty0 - padY, headBottom));
-  const lx1 = Math.max(...left.map(i => i.x1)), rx0 = Math.min(...right.map(i => i.x0));
-  out.push(box(tx0, Math.min(lx1, gR), top, bottom));
-  out.push(box(Math.max(rx0, gL), tx1, top, bottom));
-  return out;
+  const mid = (best[0] + best[1] + 1) / 2 / B;
+  const left = items.filter(i => i.x1 <= mid).reduce((s, i) => s + i.n, 0);
+  const right = items.filter(i => i.x0 >= mid).reduce((s, i) => s + i.n, 0);
+  if (left < total * 0.2 || right < total * 0.2) return null;
+  return mid;
 }
-function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+// faixa larga no alto (título, autores, resumo) que atravessa a calha — só na 1ª página
+function headerFrom(items, mid) {
+  const spans = items.filter(i => i.x0 < mid - 0.02 && i.x1 > mid + 0.02);
+  if (!spans.length) return null;
+  const bottom = Math.max(...spans.filter(i => i.y1 < 0.6).map(i => i.y1), 0);
+  if (!bottom) return null;
+  const below = items.filter(i => i.y0 > bottom && (i.x1 <= mid || i.x0 >= mid));
+  if (!below.length) return null;
+  return (bottom + Math.min(...below.map(i => i.y0))) / 2;
+}
+
+// configuração automática: número de colunas e a posição da calha (média de algumas páginas)
+export async function detectSetup(hd) {
+  const N = hd.pdf.numPages;
+  const sample = [2, 3, 4, 5, 6, 1].filter(p => p <= N);
+  const gs = [];
+  for (const n of sample) { try { const g = gutterFrom(await pageItems(hd, n)); if (g) gs.push(g); } catch (e) {} }
+  if (!gs.length) return { n: 1, splits: [], header: true };
+  gs.sort((a, b) => a - b);
+  return { n: 2, splits: [gs[Math.floor(gs.length / 2)]], header: true };
+}
+
+// recortes de todas as páginas a partir da configuração (e do corte de bordas)
+export async function layoutFromSetup(hd, setup, crop) {
+  const N = hd.pdf.numPages;
+  const [cx, cy, cw, ch] = crop || [0, 0, 1, 1];
+  const n = Math.max(1, Math.min(3, setup.n || 1));
+  const cuts = [cx];
+  for (let k = 1; k < n; k++) {
+    const s = setup.splits && setup.splits[k - 1] ? setup.splits[k - 1] : cx + cw * k / n;
+    cuts.push(Math.max(cx + 0.05, Math.min(cx + cw - 0.05, s)));
+  }
+  cuts.push(cx + cw);
+  const ov = 0.006;   // um pouco de sobra dos dois lados da calha
+  const cols = [];
+  for (let k = 0; k < n; k++) {
+    const x0 = Math.max(cx, cuts[k] - (k ? ov : 0)), x1 = Math.min(cx + cw, cuts[k + 1] + (k < n - 1 ? ov : 0));
+    cols.push([x0, x1]);
+  }
+  let head = null;
+  if (n > 1 && setup.header !== false) {
+    try { const items = await pageItems(hd, 1); head = headerFrom(items, cuts[1]); } catch (e) {}
+  }
+  const m = new Map();
+  for (let p = 1; p <= N; p++) {
+    if (n === 1) { m.set(p, [[cx, cy, cw, ch]]); continue; }
+    const boxes = [];
+    let top = cy;
+    if (p === 1 && head && head > cy + 0.03) { boxes.push([cx, cy, cw, head - cy, 1]); top = head; }
+    for (const [x0, x1] of cols) boxes.push([x0, top, x1 - x0, cy + ch - top]);
+    m.set(p, boxes);
+  }
+  return m;
+}

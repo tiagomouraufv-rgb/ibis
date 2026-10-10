@@ -15,11 +15,12 @@ import { startAutoSync } from './sync.js';
 import { TextScreen } from './textdoc.js';
 import { watchForm, form } from './form.js';
 import { headings } from './md.js';
+import { pickDocument } from './picker.js';
 import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '0.8.0';
+const VERSION = '1.0.0';
 
 class App {
   constructor() {
@@ -216,16 +217,13 @@ class App {
   async chooseSplit(curDoc) {
     if (isEink()) { toast('No e-ink a tela dividida fica desligada.'); return; }
     if (form.form === 'phone') { toast('Na tela estreita do celular a tela dividida fica desligada. Abra o Fold ou use o DeX.'); return; }
-    const docs = await S.allDocs();
-    const rec = (await this.reader.recentDocs()).filter(d => !curDoc || d.id !== curDoc.id);
-    const rest = docs.filter(d => (!curDoc || d.id !== curDoc.id) && !rec.some(r => r.id === d.id));
-    const kind = d => d.kind === 'notebook' ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF';
-    const row = (d, at) => h('button.pickrow', { type: 'button', onclick: () => { m.close(); this.openSplit(d.id, at); } }, h('b', S.docTitle(d)), h('span.muted', kind(d)));
-    const list = h('div.picklist',
-      curDoc && curDoc.kind !== 'text' ? h('button.pickrow', { type: 'button', onclick: () => { m.close(); this.openSplit(curDoc.id, this.posOf(this.screenOn(0))); } }, h('b', 'Este mesmo documento'), h('span.muted', 'para ver duas partes ao mesmo tempo')) : null,
-      rec.length ? h('div.flabel', 'RECENTES') : null, rec.slice(0, 8).map(d => row(d)),
-      rest.length ? h('div.flabel', 'TODOS') : null, rest.map(d => row(d)));
-    const m = modal('Dividir a tela: o que abrir do outro lado?', list);
+    const m = await pickDocument(this, {
+      title: 'Dividir a tela: o que abrir do outro lado?',
+      exclude: curDoc ? curDoc.id : '',
+      same: curDoc && curDoc.kind !== 'text' ? { label: 'Este mesmo documento', hint: 'para ver duas partes ao mesmo tempo', onpick: () => this.openSplit(curDoc.id, this.posOf(this.screenOn(0))) } : null,
+      onpick: d => this.openSplit(d.id),
+    });
+    void m;
   }
   async openSplit(docId, at) {
     const cur = this.screenOn(0);
@@ -331,7 +329,7 @@ class App {
   openSettings(tab) { return openSettings(tab); }
 
   async importFiles(files, projectId) {
-    let n = 0, restored = 0, last = null;
+    let n = 0, restored = 0, adobe = 0, last = null;
     for (const f of files) {
       if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { toast(f.name + ' não é um PDF.'); continue; }
       toast('Importando ' + f.name + '…', 10000);
@@ -339,10 +337,10 @@ class App {
         const bytes = new Uint8Array(await f.arrayBuffer());
         const doc = await importPdfBytes(f.name, bytes);
         if (projectId) { doc.projects = [projectId]; await S.saveDoc(doc); }
-        restored += doc.restored || 0; n++; last = doc;
+        restored += doc.restored || 0; adobe += doc.adobe || 0; n++; last = doc;
       } catch (e) { console.error(e); toast('Erro ao importar ' + f.name + ': ' + e.message, 5000); }
     }
-    if (n) toast(n + ' PDF(s) adicionado(s)' + (restored ? ' · ' + restored + ' anotações recuperadas do PDF' : '') + '.', 4000);
+    if (n) toast(n + ' PDF(s) adicionado(s)' + (restored ? ' · ' + restored + ' anotações recuperadas do PDF' : '') + (adobe ? ' · ' + adobe + ' nota(s) do Adobe convertida(s)' : '') + '.', 4000);
     await this.refreshLinkIndex();
     if (this.library.root.isConnected) this.library.renderMain();
     this.indexAll();

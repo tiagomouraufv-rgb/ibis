@@ -273,6 +273,10 @@ export class TextEditor extends MdEditBase {
       hd.addEventListener('pointerdown', e => this.dragWidth(e, side));
       el.appendChild(hd);
     }
+    // alça para mover a caixa (arraste a barrinha no alto)
+    const mv = h('div.tbox-move', { title: 'Arraste para mover a caixa', role: 'button', 'aria-label': 'Mover a caixa' }, '⠿ mover');
+    mv.addEventListener('pointerdown', e => this.dragMove(e));
+    el.appendChild(mv);
     this.cur = { v, a, el, ta, prev, bar, showPrev: false };
     this.reader.showTextBar && this.reader.showTextBar();
     const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.max(ta.scrollHeight, 40) + 'px'; };
@@ -295,7 +299,7 @@ export class TextEditor extends MdEditBase {
     });
     this.outside = e => {
       if (!this.cur) return;
-      if (wrap.contains(e.target) || bar.contains(e.target) || (e.target.closest && e.target.closest('.popmenu, .modal-back, .tbox-handle, .mathpal, .rtop'))) return;
+      if (wrap.contains(e.target) || bar.contains(e.target) || (e.target.closest && e.target.closest('.popmenu, .modal-back, .tbox-handle, .tbox-move, .mathpal, .toolpanel, .rtop'))) return;
       this.close();
     };
     setTimeout(() => document.addEventListener('pointerdown', this.outside, true), 0);
@@ -361,6 +365,24 @@ export class TextEditor extends MdEditBase {
     t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
   }
 
+  dragMove(e) {
+    if (!this.cur) return;
+    e.preventDefault(); e.stopPropagation();
+    const { v, a, el } = this.cur;
+    const p = v.pages.find(q => q.key === a.pageKey);
+    const t = e.currentTarget;
+    try { t.setPointerCapture(e.pointerId); } catch (er) {}
+    const x0 = a.x, y0 = a.y, cx = e.clientX, cy = e.clientY;
+    const k = (v.k ? v.k(v.slots.get(a.pageKey)) : v.scale);
+    const move = ev => {
+      a.x = Math.max(0, Math.min(p.w - 40, x0 + (ev.clientX - cx) / k));
+      a.y = Math.max(0, Math.min(p.h - 20, y0 + (ev.clientY - cy) / k));
+      el.style.left = `calc(var(--s) * ${a.x}px)`; el.style.top = `calc(var(--s) * ${a.y}px)`;
+    };
+    const up = () => { t.removeEventListener('pointermove', move); t.removeEventListener('pointerup', up); t.removeEventListener('pointercancel', up); if (this.cur) this.cur.ta.focus(); };
+    t.addEventListener('pointermove', move); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
+  }
+
   togglePrev() { this.cur.showPrev = !this.cur.showPrev; this.cur.prev.style.display = this.cur.showPrev ? 'block' : 'none'; if (this.cur.showPrev) this.updatePrev(); }
   async updatePrev() {
     const { v, a, ta, prev } = this.cur;
@@ -375,7 +397,7 @@ export class TextEditor extends MdEditBase {
     this.cur = null;
     document.removeEventListener('pointerdown', this.outside, true);
     c.el.classList.remove('editing');
-    c.el.querySelectorAll('.tbox-handle').forEach(x => x.remove());
+    c.el.querySelectorAll('.tbox-handle, .tbox-move').forEach(x => x.remove());
     this.reader.showTextBar && this.reader.showTextBar();
     const md = c.ta.value.replace(/\s+$/, '');
     if (!md.trim()) { if (c.a.id && (await S.annots(c.a.docId)).some(x => x.id === c.a.id)) await S.delAnnot(c.a); else c.v.redrawOverlays(c.a.pageKey); return; }

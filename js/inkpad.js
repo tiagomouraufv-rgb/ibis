@@ -4,6 +4,7 @@
 import * as S from './store.js';
 import { h, clear, icon, btn, uid, INK_COLORS, toast } from './util.js';
 import { strokePath, strokeWidth } from './viewer.js';
+import { densify, cutSegments, segPath, ERASER_SIZES } from './eraser.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const sv = (t, a) => { const e = document.createElementNS(SVGNS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
@@ -40,13 +41,18 @@ export class InkPad {
   renderBar() {
     clear(this.bar);
     const st = this.t.app.reader.settings || {};
-    this.svg.style.touchAction = st.penOnly === false ? 'none' : 'pan-y';
+    // a folha nunca deixa o navegador rolar sozinho: a caneta só escreve; o dedo rola (feito aqui mesmo)
+    this.svg.style.touchAction = 'none';
     const tb = (id, ic, label) => btn(ic, '', () => { this.tool = id; this.renderBar(); }, { title: label, iconOnly: true, cls: 'ibtn small', pressed: this.tool === id });
     this.bar.append(tb('pen', 'pen', 'Caneta'), tb('marker', 'marker', 'Marca-texto'), tb('eraser', 'eraser', 'Borracha'),
       h('span.inksep'),
       ...INK_COLORS.slice(0, 5).map(c => h('button.dot.small', { type: 'button', 'aria-label': 'Cor ' + c, style: { background: c }, 'aria-pressed': String((st.penColor || INK_COLORS[0]) === c), onclick: async () => { await S.setSettings({ penColor: c }); this.t.app.reader.settings = await S.settings(); this.renderBar(); } })),
+      this.tool === 'eraser' ? h('span.inksep') : null,
+      this.tool === 'eraser' ? h('button.ebtn', { type: 'button', 'aria-pressed': String((st.eraserMode || 'stroke') === 'stroke'), onclick: async () => { await S.setSettings({ eraserMode: 'stroke' }); this.t.app.reader.settings = await S.settings(); this.renderBar(); } }, 'Traço') : null,
+      this.tool === 'eraser' ? h('button.ebtn', { type: 'button', 'aria-pressed': String(st.eraserMode === 'area'), onclick: async () => { await S.setSettings({ eraserMode: 'area' }); this.t.app.reader.settings = await S.settings(); this.renderBar(); } }, 'Área') : null,
+      ...(this.tool === 'eraser' && st.eraserMode === 'area' ? ERASER_SIZES.map(z => h('button.wbtn', { type: 'button', 'aria-label': 'Tamanho ' + z, 'aria-pressed': String((st.eraserSize || 20) === z), onclick: async () => { await S.setSettings({ eraserSize: z }); this.t.app.reader.settings = await S.settings(); this.renderBar(); } }, h('span.esz', { style: { width: Math.min(24, z / 2 + 4) + 'px', height: Math.min(24, z / 2 + 4) + 'px' } }))) : []),
       h('span.grow'),
-      btn('undo', '', () => S.undo().then(ok => { if (!ok) toast('Nada para desfazer.'); }), { title: 'Desfazer', iconOnly: true, cls: 'ibtn small' }),
+      btn('undo', '', () => this.t.undo(), { title: 'Desfazer', iconOnly: true, cls: 'ibtn small' }),
       btn('close', '', () => this.t.toggleInk(false), { title: 'Fechar a folha de escrita', iconOnly: true, cls: 'ibtn small' }));
   }
 
@@ -98,12 +104,15 @@ export class InkPad {
     const canDraw = e => e.pointerType === 'pen' || e.pointerType === 'mouse' || !((this.t.app.reader.settings || {}).penOnly);
     const erasing = e => this.tool === 'eraser' || (e.pointerType === 'pen' && (((e.buttons || 0) & 32) || ((e.buttons || 0) & 2) || window.__penBtn === true));
     el.addEventListener('pointerdown', e => {
-      if (!canDraw(e)) return;
+      if (!canDraw(e)) {   // dedo com "só a caneta escreve": rola o texto
+        if (e.pointerType === 'touch') { this.pan = { id: e.pointerId, y: e.clientY }; try { el.setPointerCapture(e.pointerId); } catch (er) {} }
+        return;
+      }
       e.preventDefault();
       try { el.setPointerCapture(e.pointerId); } catch (er) {}
       this.tops = this.blockTops();
       const [x, y] = pt(e);
-      if (erasing(e)) { this.op = { erase: true, ids: new Set(), id: e.pointerId }; this.eraseAt(x, y); return; }
+      if (erasing(e)) { const st0 = this.t.app.reader.settings || {}; this.op = { erase: true, ids: new Set(), id: e.pointerId, area: st0.eraserMode === 'area', size: st0.eraserSize || 20, cuts: new Map() }; this.eraseAt(x, y); return; }
       const st = this.t.app.reader.settings || {};
       const marker = this.tool === 'marker';
       const an = this.anchorAt(y);
@@ -115,14 +124,22 @@ export class InkPad {
       this.add(e);
     });
     el.addEventListener('pointermove', e => {
+      if (this.pan && this.pan.id === e.pointerId) { this.t.pane.scrollTop -= e.clientY - this.pan.y; this.pan.y = e.clientY; return; }
       const op = this.op; if (!op || op.id !== e.pointerId) return;
       e.preventDefault();
       if (op.erase) { const [x, y] = pt(e); this.eraseAt(x, y); return; }
       this.add(e);
     });
     const end = async (e, cancel) => {
+      if (this.pan && this.pan.id === e.pointerId) { this.pan = null; return; }
       const op = this.op; if (!op || op.id !== e.pointerId) return;
       this.op = null;
+      if (op.erase && op.area) {
+        const olds = [], news = [];
+        for (const [id, segs] of op.cuts) { const a = this.anns.find(x => x.id === id); if (!a) continue; olds.push(a); for (const sg of segs) if (sg.length > 1) news.push(Object.assign(JSON.parse(JSON.stringify(a)), { id: uid('a'), pts: sg })); }
+        if (olds.length) await S.group(this.t.doc.id, async () => { await S.delAnnots(olds); if (news.length) await S.putAnnotsGroup(news); });
+        return;
+      }
       if (op.erase) { const del = this.anns.filter(a => op.ids.has(a.id)); if (del.length) await S.delAnnots(del); return; }
       op.path.remove();
       if (cancel || !op.a.pts.length) return;
@@ -137,7 +154,9 @@ export class InkPad {
   add(e) {
     const op = this.op;
     const r = this.svg.getBoundingClientRect();
-    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e]) || [e]) {
+    let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    if (!evs || !evs.length) evs = [e];
+    for (const ev of evs) {
       const x = ev.clientX - r.left, y = ev.clientY - r.top - op.top;
       const p = ev.pointerType === 'pen' ? (ev.pressure || 0.5) : 0.5;
       const last = op.a.pts[op.a.pts.length - 1];
@@ -149,6 +168,19 @@ export class InkPad {
   }
 
   eraseAt(x, y) {
+    if (this.op.area) {
+      const R = this.op.size / 2;
+      for (const a of this.anns) {
+        const top = this.tops.map.has(a.anchor) ? this.tops.map.get(a.anchor) : (a.y0 || 0);
+        let segs = this.op.cuts.get(a.id);
+        if (!segs) { if (!a.pts.some(q => Math.hypot(q[0] - x, q[1] + top - y) < R + a.width + 6)) continue; segs = [densify(a.pts, Math.max(0.5, R / 3))]; }
+        const r = cutSegments(segs, x, y - top, R);
+        if (!r.changed) continue;
+        this.op.cuts.set(a.id, r.segs);
+        const el = this.g.querySelector(`[data-id="${a.id}"]`); if (el) el.setAttribute('d', r.segs.length ? segPath(r.segs, strokePath) : 'M0 0');
+      }
+      return;
+    }
     for (const a of this.anns) {
       if (this.op.ids.has(a.id)) continue;
       const top = this.tops.map.has(a.anchor) ? this.tops.map.get(a.anchor) : (a.y0 || 0);

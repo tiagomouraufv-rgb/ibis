@@ -18,7 +18,9 @@ import { parseGo } from './embeds.js';
 import { textTargets } from './textdoc.js';
 import { makeDraggable, quoteMd, sourceLink } from './dnd.js';
 import { buildMathPal } from './mathpal.js';
+import { ERASER_SIZES } from './eraser.js';
 import { isEink, fastPen, flash } from './eink.js';
+import { form } from './form.js';
 
 export class Reader {
   constructor(app, side = 0) {
@@ -64,7 +66,8 @@ export class Reader {
     document.addEventListener('pointercancel', up, true);
     document.addEventListener('keydown', e => {
       if (!this.root.isConnected || !this.isFront()) return;
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); }
+      if (e.target.closest && e.target.closest('input, textarea')) return;   // dentro de um campo vale o desfazer do próprio campo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); this.redo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); this.pageJump(this.pagePill); }
     });
@@ -119,6 +122,8 @@ export class Reader {
       tb('linkrect', 'link', 'Criar link: desenhe um retângulo'),
       this.cropTool = tb('crop', 'crop', 'Recortar imagem da página (equação, figura)'),
       tb('note', 'note', 'Nota ou nota de voz: toque no lugar'),
+      btn('shapes', '', () => this.openTools('shapes'), { title: 'Formas: geométricas, óptica (Gauss, LG, Bessel, Airy…), quântica, eletromagnetismo, física médica', iconOnly: true, cls: 'ibtn tool' }),
+      btn('calc', '', () => this.openTools('calc'), { title: 'Calculadora física: λ ↔ eV ↔ cm⁻¹, feixe gaussiano, pinças, física médica, unidades', iconOnly: true, cls: 'ibtn tool' }),
       this.imgBtn = btn('image', '', e => this.imageMenu(e), { title: 'Inserir imagem', iconOnly: true, cls: 'ibtn tool' }),
       h('div.rsep'), this.colorBox, this.widthBox, h('div.rsep'),
       btn('undo', '', () => this.undo(), { title: 'Desfazer', iconOnly: true, cls: 'ibtn tool' }),
@@ -132,7 +137,7 @@ export class Reader {
     this.right = h('aside.rpanel');
     this.pill = h('div.pill');
     this.selMenu = h('div.selmenu', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
-    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal());
+    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal(), { onShape: (s, done) => this.armShape(s, done) });
     r.append(top, h('div.rbody', rail, this.side, h('div.panewrap', this.panes, this.pagePill), this.mathPal, this.right), this.selMenu, this.pill);
     this.bindSwipe();
   }
@@ -143,9 +148,46 @@ export class Reader {
     this.root.classList.toggle('textbar', on);
     if (on && !this.fmtSlot.contains(this.textEditor.bar)) this.fmtSlot.appendChild(this.textEditor.bar);
     if (!on && this.textEditor._bar) this.textEditor._bar.remove();
-    this.mathPal.classList.toggle('open', on && !this.mathHidden);
+    if (on && !this.toolsOpen && this.mathPal.dataset.tab !== 'math') this.mathPal.setTab('math');
+    this.mathPal.classList.toggle('open', (on && !this.mathHidden) || !!this.toolsOpen);
+    this.mathPal.classList.toggle('wide', this.mathPal.dataset.tab !== 'math');
   }
-  toggleMathPal() { this.mathHidden = !this.mathHidden; this.showTextBar(); }
+  toggleMathPal() { if (this.toolsOpen) this.toolsOpen = false; else this.mathHidden = !this.mathHidden; this.showTextBar(); }
+  // painel da direita em Formas ou Calculadora (botões da barra lateral)
+  async openTools(tab) {
+    if (this.toolsOpen && this.mathPal.dataset.tab === tab) { this.toolsOpen = false; this.showTextBar(); return; }
+    this.toolsOpen = true;
+    await this.mathPal.setTab(tab);
+    this.showTextBar();
+  }
+  // forma escolhida no painel: arraste na página para desenhá-la
+  armShape(s, done) {
+    if (this.shapeDone) this.shapeDone();
+    this.shapePending = s; this.shapeDone = done;
+    this.setTool('shape');
+    this.penHint.textContent = 'Arraste na página para desenhar: ' + s.label;
+    toast('Arraste na página para desenhar: ' + s.label, 2500);
+  }
+  async placeShape(v, slot, r) {
+    const sh = this.shapePending; if (!sh) return;
+    let [x, y, w, hh] = r;
+    const asp = sh.aspect || (sh.kind === 'img' ? 1 : 0.8);
+    if (w < 8 && hh < 8) { w = 140; hh = 140 * asp; x -= w / 2; y -= hh / 2; }   // só um toque: tamanho padrão
+    if (sh.square || sh.kind === 'img') { const m = Math.max(w, hh); w = m; hh = m; }
+    const st = this.settings || {};
+    if (sh.kind === 'img') {
+      const SH = await import('./shapes.js');
+      const c = SH.renderField(sh, 400);
+      const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+      const im = await NB.storeImage(blob);
+      await S.putAnnot({ kind: 'img', docId: v.doc.id, pageKey: slot.p.key, fileId: im.fileId, x, y, w, h: hh });
+      return;
+    }
+    const SH = await import('./shapes.js');
+    const lines = SH.placeShape(sh, x, y, w, hh);
+    const list = lines.filter(pts => pts.length > 1).map(pts => ({ kind: 'ink', tool: 'pen', shape: sh.id, docId: v.doc.id, pageKey: slot.p.key, color: st.penColor || '#16191D', width: st.penWidth || 2, pts }));
+    await S.putAnnotsGroup(list);
+  }
 
   // ---------- arquivos recentes (troca rápida) ----------
   async noteRecent(id) {
@@ -193,8 +235,12 @@ export class Reader {
       h('div.rbrow', list.map((d, i) => {
         const th = h('div.rbthumb');
         this.app.library.thumb(d, th).catch(() => {});
-        return h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { bar.remove(); this.switchTo(d.id, side); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF'));
-      })));
+        const card = h('button.rbcard' + (i === 0 ? '.first' : ''), { type: 'button', onclick: () => { if (card.dragged) return; bar.remove(); this.switchTo(d.id, side); } }, th, h('span.clamp', S.docTitle(d)), h('span.muted', NB.isNotebook(d) ? 'Caderno' : d.kind === 'text' ? 'Texto' : 'PDF'));
+        card.addEventListener('pointerdown', ev => this.dragRecent(ev, card, d, bar, side));
+        card.addEventListener('dragstart', ev => ev.preventDefault());   // a miniatura (imagem) não pode iniciar o arrastar do navegador
+        return card;
+      })),
+      h('div.rbtip.muted', 'Arraste um arquivo para a direita ou para a esquerda da tela para abrir lado a lado.'));
     document.body.appendChild(bar);
     if (this.app.split) { const r = this.app.slots[side].getBoundingClientRect(); bar.style.left = (r.left + r.width / 2) + 'px'; }
     setTimeout(() => {
@@ -202,6 +248,47 @@ export class Reader {
       document.addEventListener('pointerdown', off, true);
     }, 0);
   }
+  // arrastar um arquivo dos recentes para um lado da tela: abre lado a lado
+  dragRecent(e0, card, d, bar, side) {
+    if (isEink() || this.app.split === undefined) return;
+    const x0 = e0.clientX, y0 = e0.clientY, pid = e0.pointerId;
+    let ghost = null, zones = null, zone = null;
+    const mv = e => {
+      if (e.pointerId !== pid) return;
+      if (!ghost) {
+        const dx = e.clientX - x0, dy = e.clientY - y0;
+        // na horizontal, o dedo rola a fileira de recentes; para cima ou para baixo, começa o arrastar
+        if (Math.abs(dy) < 14 || Math.abs(dy) < Math.abs(dx)) { if (Math.abs(dx) > 6) { const row = bar.querySelector('.rbrow'); row.scrollLeft -= e.clientX - (this._rx || x0); this._rx = e.clientX; card.dragged = true; } return; }
+        card.dragged = true;
+        ghost = h('div.dragghost.txt', S.docTitle(d));
+        zones = h('div.splitzones', h('div.szone.l', h('span', this.app.split ? 'Abrir à esquerda' : 'Abrir aqui (no lugar)')), h('div.szone.r', h('span', 'Abrir ao lado (tela dividida)')));
+        document.body.append(zones, ghost);
+        bar.style.opacity = '.35';
+      }
+      e.preventDefault();
+      ghost.style.left = (e.clientX + 12) + 'px'; ghost.style.top = (e.clientY + 12) + 'px';
+      zone = e.clientX > innerWidth / 2 ? 'r' : 'l';
+      zones.querySelector('.szone.l').classList.toggle('on', zone === 'l');
+      zones.querySelector('.szone.r').classList.toggle('on', zone === 'r');
+    };
+    const up = async e => {
+      if (e.pointerId !== pid) return;
+      document.removeEventListener('pointermove', mv, true); document.removeEventListener('pointerup', up, true); document.removeEventListener('pointercancel', up, true);
+      this._rx = null;
+      if (!ghost) { setTimeout(() => { card.dragged = false; }, 50); return; }
+      ghost.remove(); zones.remove(); bar.remove();
+      setTimeout(() => { card.dragged = false; }, 50);
+      if (zone === 'r') {
+        if (this.app.split) await this.app.openDoc(d.id, null, 1);
+        else { if (form.form === 'phone') { toast('No celular a tela dividida fica desligada.'); return; } await this.app.openSplit(d.id); }
+      } else {
+        if (this.app.split) await this.app.openDoc(d.id, null, 0);
+        else this.switchTo(d.id, side);
+      }
+    };
+    document.addEventListener('pointermove', mv, true); document.addEventListener('pointerup', up, true); document.addEventListener('pointercancel', up, true);
+  }
+
   // dois dedos deslizando na horizontal: esquerda = arquivo anterior; direita = lista de recentes
   bindSwipe() { bindTwoFingerSwipe(this.panes, () => this.quickSwitch(), () => this.recentMenu()); }
 
@@ -273,6 +360,7 @@ export class Reader {
     if (id === 'text') this.penHint.textContent = 'Toque na página para escrever com o teclado (Markdown, $equações$)';
     if (id === 'lasso') this.penHint.textContent = 'Contorne com a S Pen o que quer selecionar';
     if (id === 'crop') this.penHint.textContent = 'Desenhe um retângulo em volta da equação ou figura';
+    if (id !== 'shape' && this.shapePending) { this.shapePending = null; if (this.shapeDone) { this.shapeDone(); this.shapeDone = null; } }
     if (id !== 'lasso') this.viewers.forEach(v => v.clearSelection());
     if (this.textEditor && this.textEditor.active && id !== 'text' && id !== 'read') this.textEditor.close();
     this.showTextBar();
@@ -286,6 +374,71 @@ export class Reader {
     if (v.paged) { if (!v.turn(dir)) toast(dir > 0 ? 'Última página.' : 'Primeira página.', 1200); return; }
     v.scroller.scrollBy({ top: dir * (v.scroller.clientHeight - 40) });
   }
+  // ajuste das colunas (como no NeoReader): bordas, número de colunas e posição da divisão
+  async columnSetup() {
+    const v = this.active; if (!v || !v.hd) return;
+    const doc = v.doc;
+    const crop0 = await v.docCrop();
+    let setup = JSON.parse(JSON.stringify(doc.colSetup || await v.autoSetup()));
+    if (!setup.crop) setup.crop = crop0.slice(0, 4);
+    const k = v.currentKey(); const pn = /^p\d+$/.test(k) ? +k.slice(1) : 1;
+    const pg = await getPage(v.hd, pn);
+    const vp0 = pg.getViewport({ scale: 1 });
+    const W = Math.min(520, innerWidth - 80), sc = W / vp0.width;
+    const vp = pg.getViewport({ scale: sc * (devicePixelRatio || 1) });
+    const cv = h('canvas.colcv'); cv.width = vp.width; cv.height = vp.height;
+    cv.style.width = W + 'px'; cv.style.height = (vp0.height * sc) + 'px';
+    pg.render({ canvasContext: cv.getContext('2d'), viewport: vp });
+    const ov = h('div.colov');
+    const stage = h('div.colstage', { style: { width: W + 'px', height: (vp0.height * sc) + 'px' } }, cv, ov);
+    const draw = () => {
+      clear(ov);
+      const [x, y, w, hh] = setup.crop;
+      const box = h('div.colcrop', { style: { left: x * 100 + '%', top: y * 100 + '%', width: w * 100 + '%', height: hh * 100 + '%' } });
+      ov.appendChild(box);
+      // alças das bordas
+      for (const side of ['l', 'r', 't', 'b']) {
+        const hd = h('div.colh.' + side);
+        hd.addEventListener('pointerdown', e => drag(e, f => {
+          const c = setup.crop; let [x0, y0, x1, y1] = [c[0], c[1], c[0] + c[2], c[1] + c[3]];
+          if (side === 'l') x0 = Math.min(x1 - 0.1, f.x); if (side === 'r') x1 = Math.max(x0 + 0.1, f.x);
+          if (side === 't') y0 = Math.min(y1 - 0.1, f.y); if (side === 'b') y1 = Math.max(y0 + 0.1, f.y);
+          setup.crop = [Math.max(0, x0), Math.max(0, y0), Math.min(1, x1) - Math.max(0, x0), Math.min(1, y1) - Math.max(0, y0)];
+        }));
+        box.appendChild(hd);
+      }
+      // divisões entre colunas
+      const n = setup.n || 1;
+      setup.splits = (setup.splits || []).slice(0, n - 1);
+      for (let i = 0; i < n - 1; i++) {
+        if (!setup.splits[i]) setup.splits[i] = x + w * (i + 1) / n;
+        const ln = h('div.colsplit', { style: { left: setup.splits[i] * 100 + '%', top: y * 100 + '%', height: hh * 100 + '%' } });
+        ln.addEventListener('pointerdown', e => drag(e, f => { setup.splits[i] = Math.max(setup.crop[0] + 0.05, Math.min(setup.crop[0] + setup.crop[2] - 0.05, f.x)); }));
+        ov.appendChild(ln);
+      }
+    };
+    const drag = (e, fn) => {
+      e.preventDefault(); e.stopPropagation();
+      const t = e.currentTarget; try { t.setPointerCapture(e.pointerId); } catch (er) {}
+      const r = stage.getBoundingClientRect();
+      const mv = ev => { fn({ x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height }); draw(); };
+      const up = () => { t.removeEventListener('pointermove', mv); t.removeEventListener('pointerup', up); };
+      t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up);
+    };
+    const nBtns = h('div.chips');
+    const head = h('input', { type: 'checkbox' }); head.checked = setup.header !== false;
+    head.addEventListener('change', () => { setup.header = head.checked; });
+    const paintN = () => { clear(nBtns); for (const n of [1, 2, 3]) nBtns.appendChild(h('button.chip', { type: 'button', 'aria-pressed': String((setup.n || 1) === n), onclick: () => { setup.n = n; setup.splits = []; paintN(); draw(); } }, n === 1 ? '1 coluna (só corta as bordas)' : n + ' colunas')); };
+    paintN(); draw();
+    modal('Ajustar colunas do modo artigo', h('div.colsetup',
+      h('p.muted', 'Como no NeoReader da Boox: arraste as bordas do quadro para cortar as margens e a linha do meio para marcar a divisão entre as colunas. Vale para todas as páginas deste PDF.'),
+      nBtns, stage,
+      h('label.check', head, h('span', 'Na 1ª página, mostrar o título e o resumo inteiros antes das colunas'))), [
+      { label: 'Automático', onclick: async () => { const a = await v.autoSetup(); setup = Object.assign(a, { crop: crop0.slice(0, 4) }); head.checked = true; paintN(); draw(); } },
+      { label: 'Aplicar', primary: true, onclick: async c => { c(); doc.colSetup = setup; await S.saveDoc(doc); doc.colMode = true; await v.reapplyArticle(); this.articleBtn.setAttribute('aria-pressed', 'true'); } },
+    ], { wide: true });
+  }
+
   // modo artigo: liga/desliga o recorte por colunas (fica lembrado no documento)
   async openArticle(force) {
     const v = this.active;
@@ -305,13 +458,27 @@ export class Reader {
     if (this.tool === 'pen') {
       for (const c of INK_COLORS) this.colorBox.appendChild(h('button.dot', { type: 'button', 'aria-label': 'Cor ' + c, style: { background: c }, 'aria-pressed': String(st.penColor === c), onclick: () => S.setSettings({ penColor: c }).then(() => this.renderColors()) }));
       for (const w of [1.2, 2, 3.5]) this.widthBox.appendChild(h('button.wbtn', { type: 'button', 'aria-label': 'Espessura ' + w, 'aria-pressed': String(st.penWidth === w), onclick: () => S.setSettings({ penWidth: w }).then(() => this.renderColors()) }, h('span', { style: { height: (w * 1.6) + 'px', background: st.penColor } })));
+    } else if (this.tool === 'eraser') {
+      const mode = st.eraserMode || 'stroke', size = st.eraserSize || 20;
+      const set = async o => { await S.setSettings(o); this.settings = await S.settings(); this.renderColors(); };
+      this.colorBox.append(
+        h('button.ebtn', { type: 'button', title: 'Apaga o traço inteiro', 'aria-pressed': String(mode === 'stroke'), onclick: () => set({ eraserMode: 'stroke' }) }, 'Traço'),
+        h('button.ebtn', { type: 'button', title: 'Apaga só a área que a borracha toca', 'aria-pressed': String(mode === 'area'), onclick: () => set({ eraserMode: 'area' }) }, 'Área'));
+      if (mode === 'area') for (const z of ERASER_SIZES) this.widthBox.appendChild(h('button.wbtn', { type: 'button', 'aria-label': 'Tamanho ' + z, title: 'Tamanho da borracha', 'aria-pressed': String(size === z), onclick: () => set({ eraserSize: z }) }, h('span.esz', { style: { width: Math.min(30, z / 2 + 4) + 'px', height: Math.min(30, z / 2 + 4) + 'px' } })));
     } else if (this.tool === 'marker') {
       for (const c of CATS.map(x => x.color)) this.colorBox.appendChild(h('button.dot', { type: 'button', 'aria-label': 'Cor ' + c, style: { background: c }, 'aria-pressed': String(st.markerColor === c), onclick: () => S.setSettings({ markerColor: c }).then(() => this.renderColors()) }));
     }
   }
 
-  async undo() { if (!(await S.undo())) toast('Nada para desfazer.'); }
-  async redo() { if (!(await S.redo())) toast('Nada para refazer.'); }
+  async undo() {
+    if (this.textEditor && this.textEditor.active) await this.textEditor.close();
+    const id = this.doc && this.doc.id;
+    if (!id || !(await S.undo(id))) toast('Nada para desfazer neste documento.', 1500);
+  }
+  async redo() {
+    const id = this.doc && this.doc.id;
+    if (!id || !(await S.redo(id))) toast('Nada para refazer.', 1500);
+  }
 
   async toggleMargin(key) {
     const v = this.active; if (!v) return;
@@ -1345,7 +1512,7 @@ export class Reader {
     popMenu(x, y, [
       { icon: 'plus', label: 'Nova página depois desta', onclick: () => this.nbAddPage(v, p.index) },
       { icon: 'link', label: 'Copiar link desta página (colar num texto ou caderno)', onclick: () => this.copyPageLink(v, p.key) },
-      { icon: 'copy', label: 'Duplicar página', onclick: async () => { await NB.duplicatePage(v.doc, p.index); await this.nbRefresh(v); } },
+      { icon: 'copy', label: 'Duplicar página', onclick: async () => { await S.group(v.doc.id, () => NB.duplicatePage(v.doc, p.index)); await this.nbRefresh(v); } },
       p.tpl === 'cover' ? { icon: 'notebook', label: 'Cor da capa…', onclick: () => this.coverMenu(v.doc, x, y, () => this.nbRefresh(v)) } : null,
       p.tpl === 'cover' ? null : { icon: 'pages', label: 'Modelo da página…', onclick: () => popMenu(x, y, NB.TEMPLATES.map(([id, l]) => ({ label: (p.tpl === id ? '✓ ' : '') + l, onclick: async () => { await NB.setTemplate(v.doc, p.index, id); await this.nbRefresh(v); } }))) },
       p.index > 0 ? { icon: 'back', label: 'Mover para cima', onclick: async () => { await NB.movePage(v.doc, p.index, -1); await this.nbRefresh(v); v.goTo(p.key, 0, { noHist: true }); } } : null,
@@ -1367,6 +1534,20 @@ export class Reader {
   }
 
   // ---------- menu "mais" ----------
+  // notas feitas no Acrobat (destaques com comentário, notas adesivas, respostas, desenhos) viram notas do app
+  async convertAdobe() {
+    const d = this.doc;
+    toast('Procurando notas do Adobe…', 8000);
+    try {
+      const { convertForeignInDoc } = await import('./export.js');
+      const k = this.active && this.active.currentKey();
+      const n = await convertForeignInDoc(d);
+      if (!n) { toast('Nenhuma nota do Adobe (ou de outro programa) neste PDF.', 4000); return; }
+      await this.app.openDoc(d.id, { key: k || 'p1', y: 0 });
+      toast(n + ' nota(s) do Adobe convertida(s) — agora dá para editar aqui.', 5000);
+    } catch (err) { console.error(err); toast('Não consegui ler as notas: ' + err.message, 5000); }
+  }
+
   moreMenu(e) {
     const d = this.doc;
     const nb = NB.isNotebook(d);
@@ -1376,6 +1557,8 @@ export class Reader {
       nb ? { icon: 'notebook', label: 'Capa do caderno…', onclick: () => this.coverMenu(d, e.clientX - 200, e.clientY + 10, () => this.nbRefresh(this.active)) } : null,
       { icon: 'ai', label: 'Resumo das minhas anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
       nb || d.kind ? null : { icon: 'ai', label: 'Resumo por capítulo/seção (IA)' + (this.active && this.active.hd && this.active.hd.pdf.numPages > 40 ? ' — recomendado para este PDF' : ''), onclick: async () => { const { openSectionBriefing } = await import('./dialogs.js'); openSectionBriefing(d); } },
+      { icon: 'share', label: 'Compartilhar… (menu do Android)', onclick: async () => (await import('./share.js')).shareDoc(d) },
+      { icon: 'bookmark', label: d.fav ? 'Tirar dos favoritos' : 'Favoritar ★', onclick: async () => { d.fav = !d.fav; await S.saveDoc(d); toast(d.fav ? 'Nos favoritos.' : 'Fora dos favoritos.'); } },
       { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => nb ? openNotebookExport(d) : openObsidianDialog(d) },
       nb ? null : { icon: 'speak', label: 'Ler a página atual em voz alta', onclick: async () => { const k = this.active.currentKey(); if (k[0] === 'p') speak(await pageText(this.active.hd, pageNum(k))); } },
       { icon: 'stop', label: 'Parar leitura em voz alta', onclick: () => stopSpeak() },
@@ -1383,6 +1566,8 @@ export class Reader {
       { icon: 'bookmark', label: 'Marcar esta página', onclick: () => this.toggleBookmark(this.active.currentKey()) },
       nb ? null : { icon: 'crop', label: (this.active && this.active.cropBox ? '✓ ' : '') + 'Cortar as bordas (texto na largura da tela)', onclick: () => { this.cropManual = !(this.active && this.active.cropBox); this.active.setCrop(this.cropManual); } },
       nb ? null : { icon: 'columns', label: (this.active && this.active.colMode ? '✓ ' : '') + 'Modo artigo (uma coluna por vez)', onclick: () => this.openArticle() },
+      nb ? null : { icon: 'columns', label: 'Ajustar colunas do modo artigo…', onclick: () => this.columnSetup() },
+      nb || d.kind ? null : { icon: 'note', label: 'Trazer as notas do Adobe deste PDF', onclick: () => this.convertAdobe() },
       !eink ? null : { icon: 'fitpage', label: ((this.settings || {}).pageFit ? '✓ ' : '') + 'Página inteira na tela', onclick: async () => { await S.setSettings({ pageFit: !(this.settings || {}).pageFit }); this.settings = await S.settings(); this.viewers.forEach(x => x.relayout(true)); } },
       !eink ? null : { icon: 'refresh', label: 'Limpar a tela agora (atualização completa)', onclick: () => flash() },
       eink ? null : { icon: 'split', label: this.app.split ? 'Fechar a tela dividida' : 'Dividir a tela', onclick: () => this.toggleSplit() },

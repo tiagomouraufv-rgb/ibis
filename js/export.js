@@ -6,6 +6,7 @@ import * as S from './store.js';
 import { catInfo, uid } from './util.js';
 import { strokeWidth } from './viewer.js';
 import { audioExt } from './audio.js';
+import { extractForeign } from './adobe.js';
 
 const DATA_NAME = 'leitor-dados.json';
 const NM = 'leitor:';
@@ -234,6 +235,8 @@ function addFlatOps(pdfDoc, pg, ops, gs) {
   pg.node.wrapContentStreams(start, end);
 }
 
+// Nota de voz: vira uma anotação de som (Sound), o tipo que o Acrobat toca com dois cliques, e o
+// arquivo original vai junto como anexo do PDF (para o app recuperar o áudio igualzinho ao reabrir).
 async function addAudioAnnot(pdfDoc, pg, a, at, names, isNote) {
   const blob = await S.audioBlob(a.audioId);
   if (!blob) return;
@@ -241,34 +244,72 @@ async function addAudioAnnot(pdfDoc, pg, a, at, names, isNote) {
   const data = new Uint8Array(await blob.arrayBuffer());
   const fname = 'nota-de-voz-' + a.id + '.' + audioExt(blob.type);
   names[a.id] = fname;
-  const ef = ctx.register(ctx.stream(data, { Type: 'EmbeddedFile', Subtype: blob.type.split(';')[0] || 'audio/webm', Params: { Size: data.length } }));
-  const fs = ctx.obj({ Type: 'Filespec', EF: { F: ef, UF: ef } });
-  fs.set(PDFName.of('F'), PDFString.of(fname));
-  fs.set(PDFName.of('UF'), PDFHexString.fromText(fname));
-  fs.set(PDFName.of('Desc'), PDFHexString.fromText('Nota de voz'));
+  await pdfDoc.attach(data, fname, { mimeType: blob.type.split(';')[0] || 'audio/webm', description: 'Nota de voz', creationDate: new Date(a.created || Date.now()), modificationDate: new Date() });
   const [X, Y] = at;
   const rect = [X - 8, Y - 8, X + 8, Y + 8];
-  const icon = `0.11 0.35 0.54 rg ${f(X - 8)} ${f(Y - 8)} 16 16 re f 1 1 1 rg ${f(X - 3)} ${f(Y - 4)} m ${f(X - 3)} ${f(Y + 4)} l ${f(X + 4)} ${f(Y)} l h f`;
-  const annot = ctx.obj({ Type: 'Annot', Subtype: 'FileAttachment', Rect: rect, F: 28, Name: 'Paperclip', C: [0.11, 0.35, 0.54], FS: ctx.register(fs), AP: { N: formXObject(ctx, rect, icon, {}) } });
-  annot.set(PDFName.of('Contents'), PDFHexString.fromText('Nota de voz' + (a.text && isNote ? ': ' + a.text : '') + ' (abra o anexo para ouvir)'));
+  const icon = `0.11 0.35 0.54 rg ${f(X - 8)} ${f(Y - 8)} 16 16 re f 1 1 1 rg ${f(X - 5)} ${f(Y - 2.5)} m ${f(X - 2)} ${f(Y - 2.5)} l ${f(X + 2)} ${f(Y - 6)} l ${f(X + 2)} ${f(Y + 6)} l ${f(X - 2)} ${f(Y + 2.5)} l ${f(X - 5)} ${f(Y + 2.5)} l h f 1 1 1 RG 1 w ${f(X + 4)} ${f(Y - 3)} m ${f(X + 6)} ${f(Y)} l ${f(X + 4)} ${f(Y + 3)} l S`;
+  const label = 'Nota de voz' + (a.text && isNote ? ': ' + a.text : '');
+  let annot;
+  const pcm = await soundPcm(blob);
+  if (pcm) {
+    const snd = ctx.flateStream(pcm.bytes, { Type: 'Sound', R: pcm.rate, C: 1, B: 16, E: 'Signed' });
+    annot = ctx.obj({ Type: 'Annot', Subtype: 'Sound', Rect: rect, F: 28, Name: 'Speaker', C: [0.11, 0.35, 0.54], Sound: ctx.register(snd), AP: { N: formXObject(ctx, rect, icon, {}) } });
+    annot.set(PDFName.of('Contents'), PDFHexString.fromText(label + ' (dois cliques para ouvir)'));
+  } else {
+    // não deu para decodificar o áudio aqui: fica só o anexo, como antes
+    const ef = ctx.register(ctx.stream(data, { Type: 'EmbeddedFile', Subtype: blob.type.split(';')[0] || 'audio/webm', Params: { Size: data.length } }));
+    const fs = ctx.obj({ Type: 'Filespec', EF: { F: ef, UF: ef } });
+    fs.set(PDFName.of('F'), PDFString.of(fname));
+    fs.set(PDFName.of('UF'), PDFHexString.fromText(fname));
+    annot = ctx.obj({ Type: 'Annot', Subtype: 'FileAttachment', Rect: rect, F: 28, Name: 'Paperclip', C: [0.11, 0.35, 0.54], FS: ctx.register(fs), AP: { N: formXObject(ctx, rect, icon, {}) } });
+    annot.set(PDFName.of('Contents'), PDFHexString.fromText(label + ' (abra o anexo para ouvir)'));
+  }
   annot.set(PDFName.of('T'), PDFHexString.fromText('Leitor de Pesquisa'));
-  annot.set(PDFName.of('NM'), PDFString.of(NM + 'au-' + a.id));
+  annot.set(PDFName.of('NM'), PDFString.of(NM + 'snd-' + a.id));
   pg.node.addAnnot(ctx.register(annot));
+}
+
+// áudio -> PCM 16 bits com sinal, mono, 22 050 Hz, bytes na ordem "big-endian" (a do formato PDF)
+const SND_RATE = 22050;
+async function soundPcm(blob) {
+  try {
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OAC) return null;
+    const ac = new OAC(1, 1, SND_RATE);   // decodifica já reamostrando para 22 050 Hz
+    const buf = await ac.decodeAudioData(await blob.arrayBuffer());
+    const n = buf.length, ch = buf.numberOfChannels;
+    const out = new Uint8Array(n * 2);
+    const dv = new DataView(out.buffer);
+    const chans = [...Array(ch)].map((_, i) => buf.getChannelData(i));
+    for (let i = 0; i < n; i++) {
+      let v = 0; for (const c of chans) v += c[i]; v /= ch;
+      dv.setInt16(i * 2, Math.max(-32768, Math.min(32767, Math.round(v * 32767))), false);
+    }
+    return { bytes: out, rate: buf.sampleRate || SND_RATE };
+  } catch (e) { console.warn('som para PDF', e); return null; }
 }
 
 // ---------- importação ----------
 // Recebe os bytes de um PDF. Se for um PDF exportado pelo app (modo editável), remove as anotações
 // gravadas, as páginas em branco e as margens, e devolve os dados para recriar tudo editável.
 export async function importPdfBytes(name, bytes) {
-  let data = null;
+  let data = null, attachments = null;
   try {
     const tmp = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise;
     data = await embeddedData({ pdf: tmp });
+    if (data && data.app === 'leitor-pesquisa') { try { attachments = await tmp.getAttachments(); } catch (e) {} }
     await tmp.destroy();
   } catch (e) { /* PDF protegido ou com erro: importa como está */ }
   if (!data || data.app !== 'leitor-pesquisa') {
-    return S.addDocFromBytes(name, bytes);
+    // PDF comum: notas do Acrobat (e de outros programas) viram anotações do app
+    const fr = await extractForeign(bytes).catch(e => { console.warn('notas de outros programas', e); return null; });
+    const doc = await S.addDocFromBytes(name, fr ? fr.bytes : bytes);
+    if (fr) { await putForeign(doc, fr.annots); doc.adobe = fr.count; }
+    return doc;
   }
+  const audioFiles = {};
+  if (attachments) for (const k in attachments) { const at = attachments[k]; if (at && at.filename) audioFiles[at.filename] = at.content; }
+  const audioNamesSet = new Set(Object.values(data.audioNames || {}));
   const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
   const ctx = pdfDoc.context;
   const audio = {};
@@ -315,11 +356,14 @@ export async function importPdfBytes(name, bytes) {
     const out = [];
     for (let i = 0; i < arr.size(); i += 2) {
       const k = arr.lookup(i); const ks = k.decodeText ? k.decodeText() : String(k);
-      if (ks !== DATA_NAME) out.push(arr.get(i), arr.get(i + 1));
+      if (ks !== DATA_NAME && !audioNamesSet.has(ks)) out.push(arr.get(i), arr.get(i + 1));
     }
     ef.set(PDFName.of('Names'), ctx.obj(out));
   } catch (e) {}
-  const clean = await pdfDoc.save({ useObjectStreams: true });
+  let clean = await pdfDoc.save({ useObjectStreams: true });
+  // notas que alguém fez depois, no Acrobat, em cima do PDF exportado
+  const fr = await extractForeign(clean).catch(e => { console.warn('notas de outros programas', e); return null; });
+  if (fr) clean = fr.bytes;
   const d = data.doc || {};
   const doc = await S.addDocFromBytes(name.replace(/ \(anotado\)/i, ''), clean, {
     name: d.name || name.replace(/\.pdf$/i, ''), meta: d.meta || {}, bookmarks: d.bookmarks || [], blanks: d.blanks || [], margins: d.margins || {}, briefing: d.briefing || '',
@@ -331,7 +375,9 @@ export async function importPdfBytes(name, bytes) {
     idMap[a.id] = na.id = uid('a');
     na.docId = doc.id;
     if (a.audioId) {
-      const au = audio[a.id];
+      let au = audio[a.id];
+      const fn = data.audioNames && data.audioNames[a.id];
+      if ((!au || !au.bytes) && fn && audioFiles[fn]) au = { bytes: audioFiles[fn], type: audioType(fn) };
       na.audioId = au && au.bytes ? await S.saveAudio(new Blob([au.bytes], { type: au.type })) : undefined;
     }
     if (na.target && na.target.docId === d.id) na.target.docId = doc.id;
@@ -346,7 +392,29 @@ export async function importPdfBytes(name, bytes) {
   }
   await S.saveDigest(st);
   doc.restored = (data.annots || []).length;
+  if (fr) { await putForeign(doc, fr.annots); doc.adobe = fr.count; }
   return doc;
+}
+
+function audioType(fn) {
+  const e = (fn.split('.').pop() || '').toLowerCase();
+  return { webm: 'audio/webm', ogg: 'audio/ogg', m4a: 'audio/mp4', mp4: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', aac: 'audio/aac' }[e] || 'audio/webm';
+}
+
+async function putForeign(doc, list) {
+  for (const a of list) { a.docId = doc.id; a.id = uid('a'); }
+  await S.putAnnotsGroup(list, { noUndo: true });
+}
+
+// "Trazer as notas do Adobe deste PDF": para um PDF que já está na biblioteca
+export async function convertForeignInDoc(doc) {
+  const blob = await S.audioBlob(doc.fileId);
+  if (!blob) throw new Error('Arquivo do PDF não encontrado no aparelho.');
+  const fr = await extractForeign(new Uint8Array(await blob.arrayBuffer()));
+  if (!fr) return 0;
+  await S.replaceDocFile(doc, fr.bytes);
+  await putForeign(doc, fr.annots);
+  return fr.count;
 }
 
 export function annotatedName(doc) {

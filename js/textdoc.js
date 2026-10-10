@@ -73,12 +73,12 @@ export class TextScreen extends MdEditBase {
     S.on('docRemote', d => {
       if (!this.doc || d.id !== this.doc.id || !this.root.isConnected) return;
       Object.assign(this.doc, JSON.parse(JSON.stringify(d)));
-      if (!this.cur) { this.blocks = splitBlocks(this.doc.md || ''); this.renderAll(); this.titleEl.textContent = S.docTitle(this.doc); }
+      if (!this.cur) { this.blocks = splitBlocks(this.doc.md || ''); this.doc.md = this.joined(); this.renderAll(); this.titleEl.textContent = S.docTitle(this.doc); }
     });
     document.addEventListener('selectionchange', () => { clearTimeout(this.selT); this.selT = setTimeout(() => this.onSelection(), 250); });
     document.addEventListener('keydown', e => {
       if (!this.root.isConnected || this.cur || e.target.closest('input, textarea') || (this.app.split && this.app.side !== this.sideIdx)) return;
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); this.redo(); }
     });
     // tocar fora do bloco em edição conclui a edição
@@ -130,7 +130,8 @@ export class TextScreen extends MdEditBase {
       rb('link', 'Link (selecione o texto antes, ou toque num bloco)', e => this.need() && this.linkMenu(e)),
       rb('list', 'Sumário automático (pelos títulos #, ##, ###)', () => this.addBlock('[[sumario]]')),
       h('div.rsep'),
-      rb('sigma', 'Mostrar/esconder os símbolos de matemática', () => this.toggleMathPal()),
+      rb('sigma', 'Mostrar/esconder os símbolos de matemática', () => { this.mathPal.setTab('math'); this.toggleMathPal(); }),
+      rb('calc', 'Calculadora física: λ ↔ eV ↔ cm⁻¹, feixe gaussiano, pinças, física médica, unidades', () => { const open = this.mathPal.classList.contains('open') && this.mathPal.dataset.tab === 'calc'; this.mathPal.setTab(open ? 'math' : 'calc'); this.mathPal.classList.toggle('open', !open || this.mathPrefOpen !== false); this.mathPal.classList.toggle('wide', !open); }),
       this.inkBtn = rb('pen', 'Folha de escrita à mão ao lado do texto (S Pen)', () => this.toggleInk()),
       h('div.grow'),
       h('div.penhint', 'Toque num bloco para editar'));
@@ -276,25 +277,20 @@ export class TextScreen extends MdEditBase {
     this.dirty = false; this.updateInfo();
   }
   snapshot() {
+    if (this.doc) S.breakUndo(this.doc.id);
     const md = this.joined();
     if (this.hist[this.hist.length - 1] !== md) { this.hist.push(md); if (this.hist.length > 80) this.hist.shift(); this.fut = []; }
   }
-  undo() {
+  // desfazer/refazer do documento inteiro (texto e escrita à mão), passo a passo
+  async undo() {
     if (this.cur) this.commit();
-    const now = this.joined();
-    while (this.hist.length && this.hist[this.hist.length - 1] === now) this.hist.pop();
-    const prev = this.hist.pop();
-    if (prev === undefined) { toast('Nada para desfazer.'); return; }
-    this.fut.push(now);
-    this.blocks = splitBlocks(prev); this.hist.push(prev);
-    this.renderAll(); this.saveNow();
+    await this.saveNow();
+    if (!this.doc || !(await S.undo(this.doc.id))) toast('Nada para desfazer.', 1500);
   }
-  redo() {
-    const nx = this.fut.pop();
-    if (nx === undefined) { toast('Nada para refazer.'); return; }
-    this.hist.push(nx);
-    this.blocks = splitBlocks(nx);
-    this.renderAll(); this.saveNow();
+  async redo() {
+    if (this.cur) this.commit();
+    await this.saveNow();
+    if (!this.doc || !(await S.redo(this.doc.id))) toast('Nada para refazer.', 1500);
   }
 
   // ---------- edição por blocos ----------
@@ -786,6 +782,8 @@ export class TextScreen extends MdEditBase {
     popMenu(e.clientX - 220, e.clientY + 10, [
       { icon: 'note', label: 'Renomear', onclick: async () => { const n = await promptBox('Renomear', 'Nome', this.doc.name, 'Salvar'); if (n && n.trim()) { this.doc.name = n.trim(); await S.saveDoc(this.doc); this.titleEl.textContent = n.trim(); } } },
       { icon: 'doc', label: 'Editar tudo como Markdown', onclick: () => this.sourceMode() },
+      { icon: 'bookmark', label: this.doc.fav ? 'Tirar dos favoritos' : 'Favoritar ★', onclick: async () => { this.doc.fav = !this.doc.fav; await S.saveDoc(this.doc); toast(this.doc.fav ? 'Nos favoritos.' : 'Fora dos favoritos.'); } },
+      { icon: 'share', label: 'Compartilhar… (menu do Android)', onclick: async () => { await this.saveNow(); (await import('./share.js')).shareDoc(this.doc); } },
       { icon: 'list', label: 'Sumário, ligações e busca', onclick: () => this.toggleSide() },
       { icon: 'folder', label: 'Projetos…', onclick: async () => { const { openProjectsDialog } = await import('./dialogs.js'); openProjectsDialog(this.doc); } },
       { icon: 'digest', label: 'Abrir o Digest', onclick: () => this.app.showDigest() },

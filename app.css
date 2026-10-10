@@ -692,3 +692,74 @@ html[data-eink] .inkcol { background: #fff; border-left: 2px solid #000; }
 /* celular: painéis fechados não ocupam altura na coluna (deixavam a página em branco) */
 html[data-form="phone"] .rbody > .mathpal:not(.open), html[data-form="phone"] .rbody > .side:not(.open), html[data-form="phone"] .rbody > .rpanel:not(.open) { display: none; }
 html[data-form="phone"] .panewrap { min-height: 0; }
+
+/* ---------- 1.0: rolagem em cada coluna da biblioteca ---------- */
+html:not([data-form="phone"]) .libcol { max-height: calc(100vh - 250px); display: flex; flex-direction: column; }
+html:not([data-form="phone"]) .libcol .libcolscroll { overflow-y: auto; flex: 1; min-height: 0; scrollbar-width: thin; padding-right: 2px; }
+.libcol .libcolscroll::-webkit-scrollbar { width: 8px; }
+.libcol .libcolscroll::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }
+html[data-form="phone"] .libcol .libcolscroll { max-height: 60vh; overflow-y: auto; }
+.tbox-move { position: absolute; left: 0; top: -26px; height: 22px; padding: 0 10px; border-radius: 8px 8px 0 0; background: var(--accent); color: #fff; font: 600 11.5px var(--font); display: flex; align-items: center; cursor: move; touch-action: none; z-index: 6; user-select: none; }
+/* borracha: traço ou área, com tamanho */
+.ebtn { border: 1px solid var(--line2); background: var(--panel); color: var(--ink); border-radius: 8px; font: 600 11.5px var(--font); padding: 6px 4px; width: 44px; min-height: 32px; }
+.ebtn[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.wbtn .esz { display: inline-block; border-radius: 50%; border: 2px solid var(--ink); background: transparent; }
+html[data-form="phone"] .ebtn { width: auto; padding: 6px 10px; }
+
+/* ---------- 1.0: ajuste das colunas do modo artigo ---------- */
+.colsetup { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.colstage { position: relative; background: #fff; box-shadow: var(--shadow); touch-action: none; user-select: none; }
+.colcv { display: block; }
+.colov { position: absolute; inset: 0; }
+.colcrop { position: absolute; border: 2px solid #1D5A8A; background: rgba(29,90,138,.06); box-shadow: 0 0 0 9999px rgba(0,0,0,.28); }
+.colh { position: absolute; background: #1D5A8A; border-radius: 4px; touch-action: none; }
+.colh.l, .colh.r { top: 50%; width: 10px; height: 44px; margin-top: -22px; cursor: ew-resize; }
+.colh.l { left: -6px; } .colh.r { right: -6px; }
+.colh.t, .colh.b { left: 50%; height: 10px; width: 44px; margin-left: -22px; cursor: ns-resize; }
+.colh.t { top: -6px; } .colh.b { bottom: -6px; }
+.colsplit { position: absolute; width: 18px; margin-left: -9px; cursor: ew-resize; touch-action: none; }
+.colsplit::after { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: #B4232C; }
+.colsplit::before { content: '⇔'; position: absolute; top: 45%; left: -6px; background: #B4232C; color: #fff; font-size: 12px; padding: 2px 4px; border-radius: 6px; }
+
+/* ---------- 1.0: escolha de documento (tela dividida) ---------- */
+.picker { display: flex; flex-direction: column; gap: 8px; min-height: min(60vh, 520px); }
+.pickbody { max-height: 58vh; overflow-y: auto; }
+.pick3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.pickcol { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pickcol .flabel { margin: 4px 0 6px; }
+.pickname { text-align: left; border: none; background: transparent; font: inherit; font-size: 14px; color: var(--ink); padding: 8px 8px; border-radius: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 36px; }
+.pickname:hover { background: var(--soft); }
+html[data-form="phone"] .pick3 { grid-template-columns: minmax(0, 1fr); }
+.rbtip { font-size: 12px; margin-top: 6px; }
+.rbcard { touch-action: none; }
+.splitzones { position: fixed; inset: 0; z-index: 190; display: grid; grid-template-columns: 1fr 1fr; pointer-events: none; }
+.szone { margin: 12px; border: 3px dashed var(--line2); border-radius: 18px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.35); }
+.szone span { background: var(--panel); padding: 10px 16px; border-radius: 12px; font-weight: 600; box-shadow: var(--shadow); }
+.szone.on { border-color: var(--accent); background: rgba(29,90,138,.14); }
+
+/* ---------- 1.0: painel da direita (Matemática, Formas, Calculadora) ---------- */
+.mathpal.open.wide { width: 310px; }
+.toolpanel .mphead { gap: 6px; z-index: 2; border-bottom: 1px solid var(--line); padding: 6px; }
+.tpsel, .tpsel2, .calcsel { width: 100%; font: 600 13px var(--font); color: var(--ink); background: var(--soft); border: 1px solid var(--line2); border-radius: 8px; padding: 7px 8px; min-height: 36px; }
+.tpsel2, .calcsel { margin: 8px 8px 4px; width: calc(100% - 16px); font-weight: 500; }
+.tpbody { flex: 1; overflow-y: auto; }
+.shgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 6px 8px 16px; }
+.shbtn { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 10px; padding: 6px 3px; min-height: 74px; font: 11px var(--font); }
+.shbtn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
+.shprev { height: 44px; display: flex; align-items: center; justify-content: center; color: var(--ink); }
+.shprev img { border-radius: 4px; }
+.shlab { text-align: center; line-height: 1.15; }
+.calcwrap { padding-bottom: 20px; }
+.cbody { padding: 0 8px; }
+.csec { font: 600 12px var(--font); color: var(--accent); margin: 14px 2px 4px; text-transform: uppercase; letter-spacing: .04em; }
+.cnote { font-size: 11.5px; color: var(--muted); margin: 2px 2px 6px; line-height: 1.35; padding: 0 8px; }
+.cbody .cnote { padding: 0; }
+.crow { display: grid; grid-template-columns: minmax(0, 1fr) 104px 58px; align-items: center; gap: 6px; margin: 3px 0; font-size: 12.5px; }
+.crow .cl { color: var(--ink); line-height: 1.2; }
+.crow input, .crow select { width: 100%; box-sizing: border-box; font: 13px var(--font); font-variant-numeric: tabular-nums; padding: 6px 7px; border: 1px solid var(--line2); border-radius: 7px; background: var(--panel); color: var(--ink); min-height: 32px; }
+.crow select { grid-column: span 2; }
+.crow input.out { background: var(--soft); border-style: dashed; font-weight: 600; }
+.crow .cu { color: var(--muted); font-size: 11.5px; }
+.crow.const .cval { text-align: left; font: 12.5px var(--font); border: 1px solid var(--line); background: var(--soft); border-radius: 7px; padding: 5px 6px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.csep { height: 1px; background: var(--line); margin: 6px 0; }
+html[data-form="phone"] .mathpal.open.wide { width: auto; height: 60vh; }

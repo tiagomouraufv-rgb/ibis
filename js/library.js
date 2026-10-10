@@ -157,8 +157,10 @@ export class Library {
     for (const [kind, label, ic] of [['pdf', 'PDFs', 'doc'], ['notebook', 'Cadernos', 'notebook'], ['text', 'Textos', 'text']]) {
       const list = sortDocs(docs.filter(d => docKind(d) === kind), 'alfa');
       const col = h('section.libcol', h('h2.libcolh', icon(ic, 18), h('span', label), h('span.muted', String(list.length))));
-      if (!list.length) col.appendChild(h('p.muted.pad', kind === 'pdf' ? 'Nenhum PDF.' : kind === 'notebook' ? 'Nenhum caderno.' : 'Nenhum texto.'));
-      for (const d of list) col.appendChild(this.row(d));
+      const sc = h('div.libcolscroll');
+      if (!list.length) sc.appendChild(h('p.muted.pad', kind === 'pdf' ? 'Nenhum PDF.' : kind === 'notebook' ? 'Nenhum caderno.' : 'Nenhum texto.'));
+      for (const d of list) sc.appendChild(this.row(d));
+      col.appendChild(sc);
       cols.appendChild(col);
     }
     body.appendChild(cols);
@@ -170,7 +172,7 @@ export class Library {
     const n = (this.annCount && this.annCount.get(d.id)) || 0;
     const r = h('div.docrow', { 'data-id': d.id },
       h('button.docrowopen', { type: 'button', onclick: () => this.app.openDoc(d.id), 'aria-label': 'Abrir ' + S.docTitle(d) }, thumb,
-        h('span.docrowtxt', h('span.ctitle', S.docTitle(d)), h('span.cmeta', metaLine(d) + (n ? ' · ' + n + ' anot.' : '')))),
+        h('span.docrowtxt', h('span.ctitle', (d.fav ? '★ ' : '') + S.docTitle(d)), h('span.cmeta', metaLine(d) + (n ? ' · ' + n + ' anot.' : '')))),
       h('button.ibtn.small', { type: 'button', 'aria-label': 'Opções', onclick: e => this.docMenu(d, e.clientX, e.clientY) }, icon('more', 18)));
     r.addEventListener('contextmenu', e => { e.preventDefault(); this.docMenu(d, e.clientX + 220, e.clientY); });
     this.dragCard(r, d);
@@ -402,6 +404,8 @@ export class Library {
   docMenu(d, x, y) {
     popMenu(x - 220, y, [
       { icon: 'doc', label: 'Abrir', onclick: () => this.app.openDoc(d.id) },
+      { icon: 'share', label: 'Compartilhar… (menu do Android)', onclick: async () => (await import('./share.js')).shareDoc(d) },
+      { icon: 'bookmark', label: d.fav ? 'Tirar dos favoritos' : 'Favoritar ★', onclick: async () => { d.fav = !d.fav; await S.saveDoc(d); } },
       { icon: 'pages', label: 'Abrir em nova janela', onclick: () => this.app.newWindow(d.id) },
       d.kind ? null : { icon: 'tag', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
       { icon: 'folder', label: 'Projetos…', onclick: () => openProjectsDialog(d) },
@@ -517,7 +521,7 @@ function cmp(a, b) { return collator.compare(a || '', b || ''); }
 export function docKind(d) { return d.kind === 'notebook' ? 'notebook' : d.kind === 'text' ? 'text' : 'pdf'; }
 function kindIcon(d) { return docKind(d) === 'notebook' ? 'notebook' : docKind(d) === 'text' ? 'text' : 'doc'; }
 // campos que só registram leitura (não contam como edição)
-const VIEW_FIELDS = new Set(['opened', 'lastKey', 'lastY', 'thumb', 'textPos', 'updated', 'fts']);
+const VIEW_FIELDS = new Set(['opened', 'lastKey', 'lastY', 'thumb', 'textPos', 'updated', 'fts', 'colSetup', 'colMode', 'inkOpen', 'fav']);
 export function lastEdit(d, annEdit) {
   let t = d.added || 0;
   for (const [k, v] of Object.entries(d.fts || {})) if (!VIEW_FIELDS.has(k) && v > t) t = v;

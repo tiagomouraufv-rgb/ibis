@@ -7,7 +7,8 @@ import { hydrate } from './embeds.js';
 import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
 import { headings } from './md.js';
 import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif } from './eink.js';
-import { columnLayout } from './columns.js';
+import { detectSetup, layoutFromSetup } from './columns.js';
+import { densify, cutSegments, segPath } from './eraser.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -146,13 +147,17 @@ export class Viewer {
     for (const p of pages) {
       const boxes = p.kind === 'pdf' ? this.colLayout.get(p.n) : null;
       if (!boxes) { out.push(Object.assign({}, p, { box: p.kind === 'pdf' && this.cropBox ? this.cropBox : null })); continue; }
-      boxes.forEach((b, i) => out.push(Object.assign({}, p, { sid: i ? p.key + '#' + i : p.key, box: b, part: i, parts: boxes.length, head: boxes.length === 3 && i === 0 })));
+      boxes.forEach((b, i) => out.push(Object.assign({}, p, { sid: i ? p.key + '#' + i : p.key, box: b.slice(0, 4), part: i, parts: boxes.length, head: b[4] === 1 })));
     }
     // a faixa larga do alto (título, resumo) é reduzida para caber na largura de uma coluna
     const colW = Math.max(...out.filter(p => p.box && !p.head).map(p => p.w * p.box[2]), 1);
     for (const p of out) if (p.head) p.fit = Math.min(1, colW / (p.w * p.box[2]));
     return out;
   }
+
+  async docCrop() { const id = this.doc.id; const b = cropCache.get(id) || await detectCrop(this.hd); cropCache.set(id, b); return b; }
+  async autoSetup() { return detectSetup(this.hd); }
+  async reapplyArticle() { if (!this.colMode) return this.setArticle(true); this.colMode = false; this.cropBox = this.cropBefore ? this.cropBox : null; return this.setArticle(true); }
 
   // modo artigo: uma coluna do PDF por vez, na largura da tela (o texto não é refeito: é o próprio PDF recortado)
   async setArticle(on) {
@@ -165,10 +170,10 @@ export class Viewer {
       this.cropBefore = !!this.cropBox;
       const box = cropCache.get(docId) || await detectCrop(this.hd);
       cropCache.set(docId, box);
-      const N = this.hd.pdf.numPages;
-      const prog = N > 24 ? (n, t) => this.app.showPill && this.app.showPill('Achando as colunas… ' + Math.round(n / t * 100) + '%') : null;
-      const lay = await columnLayout(this.hd, docId, prog);
-      if (this.app.hidePill && prog) this.app.hidePill();
+      // como no NeoReader: bordas cortadas e colunas iguais, com a divisão na calha do texto
+      let setup = this.doc.colSetup;
+      if (!setup) { setup = await detectSetup(this.hd); if (this.doc && this.doc.id === docId) { this.doc.colSetup = setup; S.saveDoc(this.doc); } }
+      const lay = await layoutFromSetup(this.hd, setup, setup.crop || box);
       if (!this.doc || this.doc.id !== docId) return false;
       this.colLayout = lay;
       this.cropBox = box;
@@ -799,7 +804,7 @@ export class Viewer {
       try { this.scroller.setPointerCapture(e.pointerId); } catch (er) {}
       this.penDown = true;
       window.getSelection().removeAllRanges();
-      this.op = { type: 'erase', s: hit.s, ids: new Set(), id: e.pointerId };
+      this.op = this.eraseOp(hit.s, e.pointerId);
       this.eraseAt(hit);
       return;
     }
@@ -820,7 +825,7 @@ export class Viewer {
       try { this.scroller.setPointerCapture(e.pointerId); } catch (er) {}
       this.penDown = e.pointerType !== 'touch';
       const erasing = tool === 'eraser' || (e.pointerType === 'pen' && ((e.buttons & 32) || (e.buttons & 2)));
-      if (erasing) { this.op = { type: 'erase', s: hit.s, ids: new Set(), id: e.pointerId }; this.eraseAt(hit); return; }
+      if (erasing) { this.op = this.eraseOp(hit.s, e.pointerId); this.eraseAt(hit); return; }
       if (tool === 'pen' || tool === 'marker') {
         const st = this.app.settings;
         const a = { kind: 'ink', tool, docId: this.doc.id, pageKey: hit.s.p.key, color: tool === 'marker' ? st.markerColor : st.penColor, width: tool === 'marker' ? 11 : st.penWidth, pts: [] };
@@ -831,10 +836,10 @@ export class Viewer {
         this.addPt(e);
         return;
       }
-      if (tool === 'linkrect' || tool === 'crop') {
-        const r = sv('rect', { class: tool === 'crop' ? 'croprect' : 'ulink live', x: hit.x, y: hit.y, width: 0, height: 0 });
+      if (tool === 'linkrect' || tool === 'crop' || tool === 'shape') {
+        const r = sv('rect', { class: tool === 'crop' || tool === 'shape' ? 'croprect' : 'ulink live', x: hit.x, y: hit.y, width: 0, height: 0 });
         hit.s.live.appendChild(r);
-        this.op = { type: 'rect', s: hit.s, x0: hit.x, y0: hit.y, r, id: e.pointerId, crop: tool === 'crop' };
+        this.op = { type: 'rect', s: hit.s, x0: hit.x, y0: hit.y, r, id: e.pointerId, crop: tool === 'crop', shape: tool === 'shape' };
         return;
       }
       if (tool === 'note') { this.op = { type: 'note', s: hit.s, x: hit.x, y: hit.y, id: e.pointerId }; return; }
@@ -872,7 +877,25 @@ export class Viewer {
     op.path.setAttribute('stroke-width', strokeWidth(op.a));
   }
 
+  // borracha: apaga o traço inteiro ou só a área (configuração da ferramenta Borracha)
+  eraseOp(s, id) {
+    const st = this.app.settings || {};
+    return { type: 'erase', s, ids: new Set(), id, area: st.eraserMode === 'area', size: st.eraserSize || 20, cuts: new Map() };
+  }
+  async commitCuts(op) {
+    if (!op.cuts.size) return;
+    const olds = [], news = [];
+    for (const [id, segs] of op.cuts) {
+      const a = (this.anns || []).find(x => x.id === id); if (!a) continue;
+      olds.push(a);
+      for (const seg of segs) if (seg.length > 1) news.push(Object.assign(JSON.parse(JSON.stringify(a)), { id: uid('a'), pts: seg }));
+    }
+    if (!olds.length) return;
+    await S.group(this.doc.id, async () => { await S.delAnnots(olds); if (news.length) await S.putAnnotsGroup(news); });
+  }
+
   eraseAt(hit) {
+    if (this.op && this.op.area) return this.eraseArea(hit);
     const R = 6 / this.k(hit.s) + 3;
     for (const a of this.annsOf(hit.s.p.key)) {
       if (a.kind !== 'ink' || this.op.ids.has(a.id)) continue;
@@ -893,7 +916,7 @@ export class Viewer {
       if (op.type === 'ink' && isPenEraser(e) && (this.app.settings || {}).penButtonErase !== false) {
         // apertou o botão no meio do traço: vira borracha
         op.path.remove();
-        this.op = { type: 'erase', s: op.s, ids: new Set(), id: e.pointerId };
+        this.op = this.eraseOp(op.s, e.pointerId);
         const hit = this.slotAt(e.clientX, e.clientY); if (hit && hit.s === op.s) this.eraseAt(hit);
         return;
       }
@@ -957,12 +980,14 @@ export class Viewer {
           await S.putAnnot(op.a);
         }
       } else if (op.type === 'erase') {
-        const del = (this.anns || []).filter(a => op.ids.has(a.id));
-        await S.delAnnots(del);
+        if (op.cursor) op.cursor.remove();
+        if (op.area) await this.commitCuts(op);
+        else { const del = (this.anns || []).filter(a => op.ids.has(a.id)); await S.delAnnots(del); }
       } else if (op.type === 'rect') {
         op.r.remove();
         const x = +op.r.getAttribute('x'), y = +op.r.getAttribute('y'), w = +op.r.getAttribute('width'), hh = +op.r.getAttribute('height');
-        if (w > 4 && hh > 4) {
+        if (op.shape) { if (!cancelled) await this.app.placeShape(this, op.s, [x, y, w, hh]); }
+        else if (w > 4 && hh > 4) {
           if (op.crop) this.app.cropDone(this, op.s, [x, y, w, hh], e.clientX, e.clientY);
           else this.app.linkBuilder(this, { pageKey: op.s.p.key, rects: [this.isNb ? this.contentBox(op.s, [x, y, w, hh]) : [x, y, w, hh]], text: '' });
         }
@@ -1024,6 +1049,27 @@ export class Viewer {
     }
   }
 
+  eraseArea(hit) {
+    const op = this.op, k = this.k(hit.s);
+    const R = op.size / 2 / k;
+    // mostra o círculo da borracha
+    if (!op.cursor) { op.cursor = sv('circle', { class: 'erasecur', r: R, fill: 'rgba(180,35,44,.08)', stroke: '#B4232C', 'stroke-width': 1 / k, 'stroke-dasharray': `${3 / k} ${3 / k}` }); hit.s.live.appendChild(op.cursor); }
+    op.cursor.setAttribute('cx', hit.x); op.cursor.setAttribute('cy', hit.y);
+    for (const a of this.annsOf(hit.s.p.key)) {
+      if (a.kind !== 'ink') continue;
+      let segs = op.cuts.get(a.id);
+      if (!segs) {
+        if (!a.pts.some(p => Math.hypot(p[0] - hit.x, p[1] - hit.y) < R + a.width + 6)) continue;
+        segs = [densify(a.pts, Math.max(0.5, R / 3))];
+      }
+      const r = cutSegments(segs, hit.x, hit.y, R);
+      if (!r.changed) continue;
+      op.cuts.set(a.id, r.segs);
+      const el = hit.s.svg.querySelector(`[data-id="${a.id}"]`);
+      if (el) el.setAttribute('d', r.segs.length ? segPath(r.segs, strokePath) : 'M0 0');
+    }
+  }
+
   // traço vindo da caneta rápida da Boox (pontos em coordenadas da tela)
   async fastStroke(o) {
     const pts = (o && o.pts) || [];
@@ -1040,10 +1086,12 @@ export class Viewer {
       +(maxP > 1 ? Math.min(1, (q[2] || 0) / maxP) * 0.8 : (q[2] || 0.5)).toFixed(2),
       Math.max(0, Math.round((q[3] || 0) - t0))]);
     if (o.erase || this.app.tool === 'eraser') {
-      this.op = { type: 'erase', s, ids: new Set() };
+      this.op = this.eraseOp(s);
       for (const q of loc) this.eraseAt({ s, x: q[0], y: q[1] });
-      const ids = this.op.ids; this.op = null;
-      const del = (this.anns || []).filter(a => ids.has(a.id));
+      const op = this.op; this.op = null;
+      if (op.cursor) op.cursor.remove();
+      if (op.area) { await this.commitCuts(op); return; }
+      const del = (this.anns || []).filter(a => op.ids.has(a.id));
       if (del.length) await S.delAnnots(del);
       return;
     }

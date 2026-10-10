@@ -9,7 +9,52 @@ export function emit(ev, data) { (listeners.get(ev) || []).forEach(fn => { try {
 // ---------- documentos ----------
 export async function allDocs() { return (await db.all('docs')).sort((a, b) => (b.opened || b.added) - (a.opened || a.added)); }
 export function getDoc(id) { return db.get('docs', id); }
-export async function saveDoc(doc) { await stampFields('docs', doc); await db.put('docs', doc); emit('docs', doc); dirty(); return doc; }
+export async function saveDoc(doc, opts = {}) {
+  const old = quiet || opts.noUndo ? null : await db.get('docs', doc.id);
+  if (old) recordDocChange(old, doc);
+  await stampFields('docs', doc); await db.put('docs', doc); emit('docs', doc); dirty(); return doc;
+}
+
+// ---------- desfazer / refazer (uma pilha por documento, como nos outros apps) ----------
+// Cada passo guarda o "antes" e o "depois": anotações (traços, destaques, caixas, imagens…) ou
+// campos do documento (páginas do caderno, páginas em branco, margens, marcadores, texto).
+const stacks = new Map();
+const CONTENT = ['pages', 'blanks', 'margins', 'bookmarks', 'md', 'name', 'coverColor', 'meta'];
+let collecting = null;
+function stackOf(docId) { if (!stacks.has(docId)) stacks.set(docId, { u: [], r: [] }); return stacks.get(docId); }
+let lastUndoDoc = null;
+function pushStep(docId, step) {
+  if (!docId || quiet) return;
+  lastUndoDoc = docId;
+  if (collecting) { collecting.push(step); return; }
+  const st = stackOf(docId);
+  // várias gravações seguidas do mesmo campo de texto (digitação) viram um passo só
+  const last = st.u[st.u.length - 1];
+  if (step.t === 'doc' && !st.brk && last && last.t === 'doc' && step.at - last.at < 1500 && Object.keys(step.after).join() === Object.keys(last.after).join() && Object.keys(step.after).join() === 'md') {
+    last.after = step.after; last.at = step.at;
+  } else st.u.push(step);
+  st.brk = false;
+  if (st.u.length > 400) st.u.shift();
+  st.r.length = 0;
+  emit('undo', docId);
+}
+function recordDocChange(old, doc) {
+  const before = {}, after = {};
+  for (const k of CONTENT) if (JSON.stringify(old[k]) !== JSON.stringify(doc[k])) { before[k] = clone(old[k]); after[k] = clone(doc[k]); }
+  if (Object.keys(after).length) pushStep(doc.id, { t: 'doc', before, after, at: Date.now() });
+}
+function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+// junta várias mudanças numa ação só (ex.: duplicar página = página nova + cópias dos traços)
+export async function group(docId, fn) {
+  const prev = collecting; collecting = [];
+  let steps;
+  try { return await fn(); }
+  finally { steps = collecting; collecting = prev; if (steps.length) pushStep(docId, { t: 'multi', steps, at: Date.now() }); }
+}
+// a próxima mudança de texto começa um passo novo (não se junta à digitação anterior)
+export function breakUndo(docId) { if (docId) stackOf(docId).brk = true; }
+export function canUndo(docId) { return !!(stacks.get(docId) && stacks.get(docId).u.length); }
+export function canRedo(docId) { return !!(stacks.get(docId) && stacks.get(docId).r.length); }
 
 // ---------- sincronização: carimbo de tempo por campo e lápides (itens apagados) ----------
 let quiet = 0;   // >0 enquanto a sincronização aplica dados vindos da nuvem
@@ -59,6 +104,19 @@ export async function addDocFromBytes(name, bytes, extra = {}) {
   return doc;
 }
 
+// troca o arquivo do PDF (novo id, para a sincronização mandar o arquivo novo) e apaga o antigo
+export async function replaceDocFile(doc, bytes) {
+  const old = doc.fileId;
+  const fileId = uid('f');
+  await db.put('files', { id: fileId, blob: new Blob([bytes], { type: 'application/pdf' }) });
+  doc.fileId = fileId; doc.size = bytes.length;
+  await saveDoc(doc, { noUndo: true });
+  if (old) { await db.del('files', old); await tomb([old]); }
+  const { forgetPdf } = await import('./pdfdoc.js');
+  forgetPdf(doc.id);
+  return doc;
+}
+
 export async function deleteDoc(id) {
   const doc = await getDoc(id);
   if (!doc) return;
@@ -87,8 +145,6 @@ export async function annots(docId) {
 }
 export async function allAnnots() { return db.all('annots'); }
 
-const undoStack = [];
-const redoStack = [];
 
 async function rawPut(a) {
   const list = await annots(a.docId);
@@ -113,14 +169,14 @@ export async function putAnnot(a, opts = {}) {
   if (!a.created) a.created = Date.now();
   a.updated = Date.now();
   await rawPut(a);
-  if (!opts.noUndo) { undoStack.push({ docId: a.docId, before: before && JSON.parse(JSON.stringify(before)), after: JSON.parse(JSON.stringify(a)) }); redoStack.length = 0; }
+  if (!opts.noUndo) pushStep(a.docId, { t: 'ann', group: [{ before: before && clone(before), after: clone(a) }], at: Date.now() });
   emit('annots', { docId: a.docId, pageKey: a.pageKey, id: a.id });
   return a;
 }
 
 export async function delAnnot(a, opts = {}) {
   await rawDel(a);
-  if (!opts.noUndo) { undoStack.push({ docId: a.docId, before: JSON.parse(JSON.stringify(a)), after: null }); redoStack.length = 0; }
+  if (!opts.noUndo) pushStep(a.docId, { t: 'ann', group: [{ before: clone(a), after: null }], at: Date.now() });
   emit('annots', { docId: a.docId, pageKey: a.pageKey, id: a.id });
 }
 
@@ -128,31 +184,59 @@ export async function delAnnot(a, opts = {}) {
 export async function delAnnots(arr) {
   if (!arr.length) return;
   for (const a of arr) await rawDel(a);
-  undoStack.push({ docId: arr[0].docId, group: arr.map(a => ({ before: JSON.parse(JSON.stringify(a)), after: null })) });
-  redoStack.length = 0;
+  pushStep(arr[0].docId, { t: 'ann', group: arr.map(a => ({ before: clone(a), after: null })), at: Date.now() });
   emit('annots', { docId: arr[0].docId });
 }
 
-async function applyStep(step, dir) {
-  const items = step.group || [step];
-  for (const s of items) {
+async function applyStep(docId, step, dir) {
+  if (step.t === 'multi') { const list = dir === 'undo' ? step.steps.slice().reverse() : step.steps; for (const s2 of list) await applyStep(docId, s2, dir); return; }
+  if (step.t === 'doc') {
+    const doc = await getDoc(docId); if (!doc) return;
+    const vals = dir === 'undo' ? step.before : step.after;
+    for (const k of Object.keys(vals)) { if (vals[k] === undefined) delete doc[k]; else doc[k] = clone(vals[k]); }
+    await saveDoc(doc, { noUndo: true });
+    emit('docRemote', doc);
+    return;
+  }
+  for (const s of step.group || []) {
     const target = dir === 'undo' ? s.before : s.after;
     const other = dir === 'undo' ? s.after : s.before;
-    if (target) { const t = JSON.parse(JSON.stringify(target)); t.updated = Date.now(); await rawPut(t); }
+    if (target) { const t = clone(target); t.updated = Date.now(); await rawPut(t); }
     else if (other) await rawDel(other);
   }
-  emit('annots', { docId: step.docId });
+  emit('annots', { docId });
 }
-export async function undo() { const s = undoStack.pop(); if (!s) return false; await applyStep(s, 'undo'); redoStack.push(s); return true; }
-export async function redo() { const s = redoStack.pop(); if (!s) return false; await applyStep(s, 'redo'); undoStack.push(s); return true; }
+export async function undo(docId) {
+  docId = docId || lastUndoDoc;   // sem documento: o último que mudou
+  const st = stacks.get(docId); const s = st && st.u.pop(); if (!s) return false;
+  await applyStep(docId, s, 'undo'); st.r.push(s); emit('undo', docId); return true;
+}
+export async function redo(docId) {
+  docId = docId || lastUndoDoc;
+  const st = stacks.get(docId); const s = st && st.r.pop(); if (!s) return false;
+  await applyStep(docId, s, 'redo'); st.u.push(s); emit('undo', docId); return true;
+}
 
 // ---------- arquivos de áudio ----------
 export async function saveAudio(blob) {
   const id = uid('au');
-  await db.put('files', { id, blob });
+  const { withDuration } = await import('./webmfix.js');
+  blob = await withDuration(blob);   // grava a duração certa no arquivo (o player mostrava um tempo errado)
+  await db.put('files', { id, blob, durFixed: true });
   return id;
 }
-export async function audioBlob(id) { const f = await db.get('files', id); return f ? f.blob : null; }
+export async function audioBlob(id) {
+  const f = await db.get('files', id);
+  if (!f) return null;
+  // gravações antigas (WebM sem duração): corrige uma vez e guarda
+  if (!f.durFixed && /webm/i.test((f.blob && f.blob.type) || '')) {
+    const { withDuration } = await import('./webmfix.js');
+    const fixed = await withDuration(f.blob);
+    f.blob = fixed; f.durFixed = true;
+    try { await db.put('files', f); } catch (e) {}
+  }
+  return f.blob;
+}
 
 // ---------- gravações sincronizadas ----------
 export async function recordings(docId) { return (await db.byIndex('recordings', 'docId', docId)).sort((a, b) => a.started - b.started); }
@@ -196,7 +280,7 @@ const DEFAULTS = {
   geminiKey: '', geminiModel: 'gemini-3.8-flash', language: 'português do Brasil',
   researchContext: 'Pesquisador em fotônica e pinças ópticas (UFV): aprisionamento óptico de nanopartículas de semicondutores orgânicos (MEH-PPV/Pdots) e de micropartículas semicondutoras (Ge, Si); modelagem teórica com osciladores de Lorentz no Mathcad Prime; orienta alunos de graduação.',
   translateTo: 'pt', obsidianVault: '', obsidianFolder: 'Leituras', theme: 'auto', pdfMode: 'normal',
-  penOnly: true, penButtonErase: true, syncClientId: '', penWidth: 2, penColor: '#16191D', markerColor: '#FFE36E', ttsRate: 1,
+  penOnly: true, penButtonErase: true, eraserMode: 'stroke', eraserSize: 20, syncClientId: '', penWidth: 2, penColor: '#16191D', markerColor: '#FFE36E', ttsRate: 1,
 };
 let settingsCache = null;
 export async function settings() {
@@ -217,7 +301,7 @@ export function getTexts(docId) { return db.get('texts', docId); }
 export function allTexts() { return db.all('texts'); }
 
 // grava várias anotações como uma só ação de desfazer (mover/redimensionar/duplicar)
-export async function putAnnotsGroup(arr) {
+export async function putAnnotsGroup(arr, opts = {}) {
   if (!arr.length) return;
   const list = await annots(arr[0].docId);
   const group = [];
@@ -229,8 +313,7 @@ export async function putAnnotsGroup(arr) {
     group.push({ before: before && JSON.parse(JSON.stringify(before)), after: JSON.parse(JSON.stringify(a)) });
     await rawPut(a);
   }
-  undoStack.push({ docId: arr[0].docId, group });
-  redoStack.length = 0;
+  if (!opts.noUndo) pushStep(arr[0].docId, { t: 'ann', group, at: Date.now() });
   emit('annots', { docId: arr[0].docId });
 }
 
