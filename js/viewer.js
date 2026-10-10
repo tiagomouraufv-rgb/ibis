@@ -130,6 +130,24 @@ export class Viewer {
     requestAnimationFrame(() => this.goTo(k, off, { noHist: true, exact: true }));
   }
 
+  // melhor ajuste: corta as bordas brancas do PDF e encaixa o texto na largura da tela (no modo artigo,
+  // a coluna; no caderno, a página). Tocar de novo volta a mostrar a página inteira.
+  async bestFit(force) {
+    const on = force !== undefined ? force : !this.fitOn;
+    this.fitOn = on;
+    const k = this.currentKey(), off = this.currentOffset();
+    if (!this.isNb && this.hd && !this.colMode) await this.setCrop(on);
+    this.zoom = 1;
+    this.tight = on;   // sem a folga dos lados
+    this.scale = this.fitScale();
+    for (const sl of this.slots.values()) { this.sizeSlot(sl); sl.rendered = 0; }
+    this.scroller.scrollLeft = 0;
+    this.renderVisible();
+    requestAnimationFrame(() => this.goTo(k, off, { noHist: true, exact: true }));
+    this.app.onZoom && this.app.onZoom(this);
+    return on;
+  }
+
   // reconstrói a lista (depois de inserir/remover página em branco)
   async refreshPages() {
     const k = this.currentKey();
@@ -191,7 +209,7 @@ export class Viewer {
   fitScale() {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
     const maxW = Math.max(...this.pages.map(p => (p.w * (p.box ? p.box[2] : this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1) + this.amOf(p).w) * (p.fit || 1)), 1) * (anyMargin && !this.colMode ? 1 + MARGIN_FRAC : 1);
-    const avail = Math.max(200, this.scroller.clientWidth - 28);
+    const avail = Math.max(200, this.scroller.clientWidth - (this.tight ? 10 : 28));
     // e-ink com "página inteira": a página cabe na altura da tela (sem rolar dentro dela)
     if (this.paged && (this.app.settings || {}).pageFit && !this.columns) {
       const maxH = Math.max(...this.pages.map(p => p.h * (this.cropBox && p.kind === 'pdf' ? this.cropBox[3] : 1)), 1);
@@ -237,7 +255,21 @@ export class Viewer {
       this.io.observe(wrap);
       this.drawOverlay(s);
     }
+    // caderno: botão para mais uma página no fim
+    if (this.isNb && this.pages.length) {
+      this.pagesEl.appendChild(h('div.nbmore', h('button.sbtn', { type: 'button', onclick: () => this.app.nbAddPage(this, this.pages[this.pages.length - 1].index) }, icon('plus', 18), h('span', 'Nova página'))));
+    }
     this.updateBookmarks();
+  }
+
+  // escreveu perto do fim da última página do caderno: já cria a próxima (como um caderno sem fim)
+  maybeAutoPage(s, pts) {
+    if (!this.isNb || this.autoAdding || !pts || !pts.length) return;
+    const last = this.pages[this.pages.length - 1];
+    if (!last || s.p.key !== last.key || last.tpl === 'cover') return;
+    if (Math.max(...pts.map(q => q[1])) < last.h * 0.85) return;
+    this.autoAdding = true;
+    Promise.resolve(this.app.nbAddPage(this, last.index, undefined, { stay: true })).finally(() => { this.autoAdding = false; });
   }
 
   hasMargin(key) { return !!(this.doc.margins && this.doc.margins[key]); }
@@ -1138,6 +1170,7 @@ export class Viewer {
           this.anns.push(op.a);           // desenha já, sem esperar o banco
           this.drawOverlay(op.s);
           await S.putAnnot(op.a);
+          this.maybeAutoPage(op.s, op.a.pts);
         }
       } else if (op.type === 'erase') {
         if (op.cursor) op.cursor.remove();
@@ -1268,6 +1301,7 @@ export class Viewer {
     this.anns.push(a);
     this.drawOverlay(s);
     await S.putAnnot(a);
+    this.maybeAutoPage(s, a.pts);
   }
 
   hitTest(hit) {

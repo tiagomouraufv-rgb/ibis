@@ -8,7 +8,7 @@ import { openExternal } from './platform.js';
 import { fmt, parse } from './calc.js';
 
 const BASE = 'https://raw.githubusercontent.com/polyanskiy/refractiveindex.info-database/master/database/';
-const CAT_KEY = 'nk:catalog', CAT_TTL = 30 * 24 * 3600e3;
+const CAT_KEY = 'nk:catalog', META_KEY = 'nk:meta', WEEK = 7 * 24 * 3600e3, CAT_TTL = WEEK;
 const LASERS = [405, 488, 532, 633, 785, 808, 1064, 1550];
 
 // nomes em português -> termos do catálogo (em inglês / fórmula)
@@ -60,11 +60,12 @@ export function catalog(force) {
     const cached = await db.kvGet(CAT_KEY, null);
     if (cached && !force && Date.now() - cached.t < CAT_TTL) return cached.books;
     try {
-      const r = await fetch(BASE + 'catalog-nk.yml');
+      const r = await fetch(BASE + 'catalog-nk.yml', { cache: 'no-cache' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const books = parseCatalog(await r.text());
       if (!books.length) throw new Error('catálogo vazio');
       await db.kvSet(CAT_KEY, { t: Date.now(), books });
+      if (!(await lastUpdate())) await db.kvSet(META_KEY, { t: Date.now() });
       return books;
     } catch (e) {
       if (cached) return cached.books;   // sem internet: usa o que já tinha
@@ -192,19 +193,43 @@ const pageCache = new Map();
 export async function loadPage(path) {
   if (pageCache.has(path)) return pageCache.get(path);
   const key = 'nk:p:' + path;
+  let cached = await db.kvGet(key, null);
+  if (typeof cached === 'string') cached = { t: 0, text: cached };   // formato antigo
   let text = null;
-  try {
-    const r = await fetch(BASE + 'data/' + path);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    text = await r.text();
-    db.kvSet(key, text).catch(() => {});
-  } catch (e) {
-    text = await db.kvGet(key, null);
-    if (!text) throw new Error('Não consegui baixar os dados deste material (sem internet?).');
+  if (cached && Date.now() - cached.t < WEEK) text = cached.text;   // ainda novo: nem vai à internet
+  else {
+    try { text = await fetchPage(path); }
+    catch (e) { text = cached && cached.text; if (!text) throw new Error('Não consegui baixar os dados deste material (sem internet?).'); }
   }
   const d = parseData(text);
   pageCache.set(path, d);
   return d;
+}
+async function fetchPage(path) {
+  const r = await fetch(BASE + 'data/' + path, { cache: 'no-cache' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const text = await r.text();
+  await db.kvSet('nk:p:' + path, { t: Date.now(), text }).catch(() => {});
+  return text;
+}
+
+// ---------- atualização semanal ----------
+// Uma vez por semana (com internet), baixa de novo o catálogo e os materiais que você já usou, para
+// acompanhar as correções e os dados novos do refractiveindex.info.
+export async function lastUpdate() { const m = await db.kvGet(META_KEY, null); return m && m.t || 0; }
+export async function weeklyUpdate(force) {
+  if (!force && (typeof navigator !== 'undefined' && navigator.onLine === false)) return false;
+  const last = await lastUpdate();
+  const everUsed = await db.kvGet(CAT_KEY, null);
+  if (!everUsed && !force) return false;          // nunca abriu o índice: não baixa nada
+  if (!force && Date.now() - last < WEEK) return false;
+  await catalog(true);
+  const all = await db.all('kv');
+  const paths = all.filter(r => String(r.k).startsWith('nk:p:')).map(r => String(r.k).slice(5));
+  let n = 0;
+  for (const p of paths) { try { await fetchPage(p); pageCache.delete(p); n++; } catch (e) {} await new Promise(r => setTimeout(r, 120)); }
+  await db.kvSet(META_KEY, { t: Date.now(), pages: n });
+  return true;
 }
 
 // ---------- interface ----------
@@ -276,6 +301,9 @@ export function buildNk(host, opts = {}) {
     if (!term) {
       const r = recent();
       body.appendChild(h('p.muted', 'Digite o nome do material (em português ou inglês) ou a fórmula. Dados: refractiveindex.info (domínio público).'));
+      const lu = await lastUpdate();
+      const upd = h('button.sbtn.small', { type: 'button', onclick: async () => { upd.disabled = true; upd.textContent = 'Atualizando…'; try { await weeklyUpdate(true); toast('Dados do refractiveindex.info atualizados.', 2000); } catch (e) { toast('Sem conexão para atualizar.', 2500); } showList(); } }, 'Atualizar agora');
+      body.appendChild(h('div.cnote', (lu ? 'Dados atualizados em ' + new Date(lu).toLocaleDateString('pt-BR') + '. ' : '') + 'O app confere a fonte uma vez por semana, sozinho. ', upd));
       if (r.length) {
         body.appendChild(h('div.flabel', 'USADOS POR ÚLTIMO'));
         for (const x of r) body.appendChild(h('button.srow', { type: 'button', onclick: async () => { const books = await catalog(); const b = books.find(y => y.s === x.s && y.b === x.b); const p = b && b.p.find(y => y.id === x.p); if (p) showPage(b, p); } }, h('div.grow', h('div', x.n), h('div.muted.clamp', x.pn))));

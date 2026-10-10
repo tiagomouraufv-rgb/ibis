@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 
 class App {
   constructor() {
@@ -74,6 +74,8 @@ class App {
     S.on('form', f => { syncPageKeys(); if (f.eink && this.split) this.exitSplit(this.side); });
     document.addEventListener('keydown', e => this.onPageKey(e));
     // Alt+N: índice de refração (refractiveindex.info) do texto selecionado, ou a busca vazia
+    // índice de refração: confere a fonte uma vez por semana (só se você já usou)
+    setTimeout(() => import('./nkdb.js').then(m => m.weeklyUpdate()).catch(() => {}), 30000);
     document.addEventListener('keydown', async e => {
       if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyN') return;
       e.preventDefault();
@@ -192,11 +194,23 @@ class App {
   // link: abre na outra janela, se houver uma e a opção estiver ligada
   async openElsewhere(target) {
     const st = await S.settings();
-    const other = st.linksOtherWindow !== false ? WIN.otherWindow() : null;
-    if (!other) return false;
-    WIN.post({ t: 'open', to: other, docId: target.docId, key: target.pageKey, y: target.y || 0 });
-    toast('Aberto na outra janela.', 1500);
-    return true;
+    if (st.linksOtherWindow === false) return false;
+    for (const other of WIN.otherWindows().slice(0, 3)) {
+      const ok = await WIN.request({ t: 'open', to: other, docId: target.docId, key: target.pageKey, y: target.y || 0 }, 1200);
+      if (ok) { toast('Aberto na outra janela.', 1500); return true; }
+      WIN.forget(other);   // não respondeu (fechada ou em segundo plano): esquece e tenta a próxima
+    }
+    return false;   // nenhuma outra janela respondeu: abre aqui
+  }
+  // link para outro documento, com uma janela só: abre aqui mesmo ou lado a lado (Configurações > Geral)
+  async linkTarget(target) {
+    if (await this.openElsewhere(target)) return true;
+    const st = await S.settings();
+    if (st.linkOpen === 'split' && !this.split && !isEink() && form.form !== 'phone') {
+      await this.openSplit(target.docId, { key: target.pageKey || 'p1', y: target.y || 0 });
+      return true;
+    }
+    return false;
   }
   newWindow(docId) { if (!WIN.openNewWindow(docId)) toast('O navegador bloqueou a nova janela. Permita pop-ups para este site.'); }
 

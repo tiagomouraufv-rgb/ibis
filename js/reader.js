@@ -70,10 +70,54 @@ export class Reader {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); this.redo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); this.pageJump(this.pagePill); }
+      // Delete (ou Backspace): apaga o que está selecionado (forma, traços, imagem…)
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const v = this.viewers.find(x => x.sel);
+        if (!v || (this.textEditor && this.textEditor.active)) return;
+        e.preventDefault();
+        this.deleteSelection(v);
+      }
     });
   }
 
   get doc() { return this.active && this.active.doc; }
+
+  async saveAsShape(list) {
+    const MY = await import('./myshapes.js');
+    const st = await MY.load();
+    const go = async catId => {
+      const label = await promptBox('Nova forma', 'Nome da forma (ex.: Montagem da pinça)', ''); if (label === null) return;
+      try {
+        const ink = list.filter(a => a.kind === 'ink');
+        if (ink.length) await MY.addFromStrokes(catId, label, ink);
+        else { const b = await S.audioBlob(list[0].fileId); await MY.addFromImage(catId, label, b); }
+        toast('Forma salva em “' + ((await MY.load()).cats.find(c => c.id === catId) || {}).name + '”.', 2500);
+      } catch (e) { toast(e.message, 3500); }
+    };
+    const newCat = async () => { const n = await promptBox('Nova categoria de formas', 'Nome (ex.: Montagens do laboratório)', ''); if (n) go((await MY.addCat(n)).id); };
+    if (!st.cats.length) return newCat();
+    popMenu(innerWidth / 2 - 120, 120, st.cats.map(c => ({ icon: 'folder', label: c.name, onclick: () => go(c.id) })).concat([{ icon: 'plus', label: 'Nova categoria…', onclick: newCat }]));
+  }
+
+  // melhor ajuste (tela simples, dividida ou modo artigo): vale para os dois lados da tela dividida
+  async bestFit() {
+    const v = this.active; if (!v) return;
+    const on = await v.bestFit();
+    if (this.app.split) {
+      for (const r of this.app.readers) if (r !== this && r.root.isConnected && r.active && r.active.doc) await r.active.bestFit(on);
+      for (const t of this.app.texts) if (t.root.isConnected) t.bestFit(on);
+    }
+    this.fitBtn.setAttribute('aria-pressed', String(on));
+    toast(on ? 'Melhor ajuste: bordas cortadas e texto na largura da tela.' : 'Página inteira.', 1500);
+  }
+
+  async deleteSelection(v) {
+    const sel = v.sel; if (!sel) return;
+    const list = v.annsOf(sel.s.p.key).filter(a => sel.ids.has(a.id));
+    v.clearSelection();
+    document.querySelectorAll('.popmenu.objmenu').forEach(e => e.remove());
+    if (list.length) { await S.delAnnots(list); toast(list.length + ' item(ns) apagado(s). Ctrl+Z desfaz.', 1800); }
+  }
 
   // ---------- estrutura ----------
   buildChrome() {
@@ -100,6 +144,7 @@ export class Reader {
       btn('swap', '', e => this.recentMenu(e), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
       hideTb(btn('search', '', () => this.toggleSide('busca'), { title: 'Buscar no PDF', iconOnly: true })),
       hideTb(btn('split', '', () => this.toggleSplit(), { title: 'Lado a lado', iconOnly: true, cls: 'ibtn no-eink' })),
+      this.fitBtn = btn('fitpage', '', () => this.bestFit(), { title: 'Melhor ajuste: o texto ocupa a largura da tela (corta as bordas brancas). Toque de novo para a página inteira.', iconOnly: true }),
       this.articleBtn = hideTb(btn('columns', '', () => this.openArticle(), { title: 'Modo artigo: uma coluna do PDF por vez, na largura da tela', iconOnly: true, cls: 'ibtn notnb' })),
       hideTb(this.modeBtn),
       hideTb(this.recBtn),
@@ -137,7 +182,7 @@ export class Reader {
     this.right = h('aside.rpanel');
     this.pill = h('div.pill');
     this.selMenu = h('div.selmenu', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
-    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal(), { onShape: (s, done) => this.armShape(s, done) });
+    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal(), { onShape: (s, done) => this.armShape(s, done), getSelected: () => { const v = this.viewers.find(x => x.sel); return v ? v.annsOf(v.sel.s.p.key).filter(a => v.sel.ids.has(a.id)) : null; } });
     r.append(top, h('div.rbody', rail, this.side, h('div.panewrap', this.panes, this.pagePill), this.mathPal, this.right), this.selMenu, this.pill);
     this.bindSwipe();
   }
@@ -174,6 +219,16 @@ export class Reader {
     const asp = sh.aspect || (sh.kind === 'img' ? 1 : 0.8);
     if (w < 8 && hh < 8) { w = 140; hh = 140 * asp; x -= w / 2; y -= hh / 2; }   // só um toque: tamanho padrão
     if (sh.square || sh.kind === 'img') { const m = Math.max(w, hh); w = m; hh = m; }
+    if (sh.keepAspect && sh.aspect) { if (hh / w > sh.aspect) w = hh / sh.aspect; else hh = w * sh.aspect; }
+    if (sh.kind === 'uimg') {
+      const b = await S.audioBlob(sh.fileId);
+      if (!b) { toast('A imagem desta forma não está mais no aparelho.'); return; }
+      const im = await NB.storeImage(b);   // cópia própria (apagar o documento não apaga a forma)
+      const a = await S.putAnnot({ kind: 'img', docId: v.doc.id, pageKey: slot.p.key, fileId: im.fileId, x, y, w, h: hh, shape: sh.id });
+      this.setTool('read');
+      await v.selectNew(slot, [a.id], { quiet: true });
+      return;
+    }
     const st = this.settings || {};
     if (sh.kind === 'img') {
       const SH = await import('./shapes.js');
@@ -181,6 +236,7 @@ export class Reader {
       const blob = await new Promise(res => c.toBlob(res, 'image/png'));
       const im = await NB.storeImage(blob);
       const a = await S.putAnnot({ kind: 'img', docId: v.doc.id, pageKey: slot.p.key, fileId: im.fileId, x, y, w, h: hh, shape: sh.id });
+      this.setTool('read');   // volta para o Selecionar: outro toque não cria outra forma
       await v.selectNew(slot, [a.id], { quiet: true });
       return;
     }
@@ -190,6 +246,7 @@ export class Reader {
     const list = lines.filter(pts => pts.length > 1).map(pts => ({ kind: 'ink', tool: 'pen', shape: sh.id, sgroup, docId: v.doc.id, pageKey: slot.p.key, color: st.penColor || '#16191D', width: st.penWidth || 2, pts }));
     await S.putAnnotsGroup(list);
     // já fica selecionada: arraste para mover, canto para o tamanho, bolinha para girar
+    this.setTool('read');   // volta para o Selecionar: outro toque não cria outra forma
     await v.selectNew(slot, list.map(a => a.id), { quiet: true });
   }
 
@@ -577,7 +634,7 @@ export class Reader {
     const d = await S.getDoc(target.docId);
     if (!d) { toast('O documento de destino não está mais na biblioteca.'); return; }
     if (this.app.split) { this.app.openInOther(this.sideIdx, target); return; }
-    if (target.docId !== v.doc.id && await this.app.openElsewhere(target)) return;
+    if (target.docId !== v.doc.id && await this.app.linkTarget(target)) return;
     if (d.kind === 'text') { this.app.openAt(d.id, target.pageKey, target.y); return; }
     if (this.viewers.length > 1) {
       const other = this.viewers.find(x => x !== v);
@@ -1467,10 +1524,11 @@ export class Reader {
         [...m.querySelectorAll('button')].forEach((b, i) => { b.style.color = INK_COLORS[i]; b.style.fontSize = '22px'; });
       } } : null,
       sel.canRot ? { icon: 'refresh', label: 'Girar 90°', onclick: () => v.rotateSel(90) } : null,
+      (hasInk || (list().length === 1 && list()[0].kind === 'img')) ? { icon: 'shapes', label: 'Salvar como forma (nas minhas categorias)…', onclick: () => this.saveAsShape(list()) } : null,
       hasInk ? { icon: 'swap', label: 'Espelhar (esquerda ↔ direita)', onclick: () => v.flipSel(true) } : null,
       hasInk ? { icon: 'swap', label: 'Espelhar (cima ↔ baixo)', onclick: () => v.flipSel(false) } : null,
       { icon: 'link', label: 'Criar link a partir da seleção', onclick: () => { const bb = sel.bbox; const s0 = sel.s; v.clearSelection(); this.linkBuilder(v, { pageKey: s0.p.key, rects: [[bb[0], bb[1], bb[2], bb[3]]], text: '' }); } },
-      { icon: 'trash', label: 'Apagar', danger: true, onclick: async () => { await S.delAnnots(list()); v.clearSelection(); } },
+      { icon: 'trash', label: 'Apagar (Delete)', danger: true, onclick: () => this.deleteSelection(v) },
     ];
     const m = popMenu(Math.min(px, innerWidth - 260), Math.max(70, py), items);
     m.classList.add('objmenu');
@@ -1504,10 +1562,13 @@ export class Reader {
     } catch (err) { toast(err.message); }
   }
 
-  async nbAddPage(v, index, tpl) {
+  async nbAddPage(v, index, tpl, opts = {}) {
     const p = await NB.addPage(v.doc, index, tpl);
+    const keep = opts.stay ? { k: v.currentKey(), y: v.currentOffset() } : null;
     for (const x of this.viewers) if (x.doc && x.doc.id === v.doc.id) { x.doc = v.doc; await x.refreshPages(); }
-    v.goTo('n' + p.id, 0, { noHist: true });
+    if (keep) v.goTo(keep.k, keep.y, { noHist: true, exact: true });
+    else v.goTo('n' + p.id, 0, { noHist: true });
+    if (opts.stay) toast('Nova página no fim do caderno.', 1500);
     if (this.sideOpen) this.renderSide();
   }
 

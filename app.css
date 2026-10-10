@@ -794,3 +794,10 @@ html[data-form="phone"] .mathpal.open.wide { width: auto; height: 60vh; }
 .nkreftxt { white-space: pre-line; color: var(--muted, #5b6672); }
 .nklinks, .nkfoot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .nkwrap .crow { grid-template-columns: minmax(0, 1fr) 128px 42px; }
+.nbmore { display: flex; justify-content: center; padding: 14px 0 40px; }
+.nbmore .sbtn { gap: 6px; }
+/* 1.0.2 */
+.fitwide .tdoc { max-width: none; padding: 26px 22px; border-radius: 0; }
+.shadd .shprev { font-size: 26px; line-height: 44px; color: var(--muted, #5b6672); }
+.ucatbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
+.ucatbar:empty { display: none; }

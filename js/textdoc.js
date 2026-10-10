@@ -106,6 +106,7 @@ export class TextScreen extends MdEditBase {
       btn('split', '', () => this.app.split ? this.app.exitSplit(this.sideIdx) : this.app.chooseSplit(this.doc), { title: 'Dividir a tela / fechar a divisão', iconOnly: true, cls: 'ibtn no-eink' }),
       btn('swap', '', () => this.app.reader.recentMenu(null, this.doc && this.doc.id, this.sideIdx), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
       btn('upload', 'Exportar', () => openTextExport(this.doc), { cls: 'pbtn' }),
+      this.fitBtn = btn('fitpage', '', () => this.bestFit(), { title: 'Melhor ajuste: o texto ocupa a largura da tela. Toque de novo para a coluna de leitura.', iconOnly: true }),
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }));
     this.side = h('aside.side');
     this.article = h('article.tdoc.md', { 'aria-label': 'Documento de texto' });
@@ -175,6 +176,17 @@ export class TextScreen extends MdEditBase {
   }
 
   // ---------- folha de escrita à mão ----------
+  bestFit(force) {
+    const on = force !== undefined ? force : !this.root.classList.contains('fitwide');
+    this.root.classList.toggle('fitwide', on);
+    if (this.fitBtn) this.fitBtn.setAttribute('aria-pressed', String(on));
+    if (force === undefined) {
+      toast(on ? 'Melhor ajuste: texto na largura da tela.' : 'Coluna de leitura.', 1500);
+      if (this.app.split) for (const r of this.app.readers) if (r.root.isConnected && r.active && r.active.doc) r.active.bestFit(on);
+    }
+    return on;
+  }
+
   async toggleInk(on, silent) {
     on = on === undefined ? !(this.inkPad && this.inkPad.on) : !!on;
     if (on && !this.app.reader.settings) this.app.reader.settings = await S.settings();
@@ -514,7 +526,7 @@ export class TextScreen extends MdEditBase {
     if (g) {
       if (this.app.split) { this.app.openInOther(this.sideIdx, { docId: g.docId, pageKey: g.key || 'top', y: g.y }); return; }
       if (g.docId === this.doc.id) { this.scrollToKey(g.key || 'top', true); return; }
-      this.app.openElsewhere({ docId: g.docId, pageKey: g.key || 'top', y: g.y }).then(done => { if (!done) this.app.openAt(g.docId, g.key, g.y); });
+      this.app.linkTarget({ docId: g.docId, pageKey: g.key || 'top', y: g.y }).then(done => { if (!done) this.app.openAt(g.docId, g.key, g.y); });
       return;
     }
     if (/^#dg=/.test(href)) { this.app.showDigest(href.slice(4)); return; }

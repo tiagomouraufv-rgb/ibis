@@ -324,6 +324,7 @@ export async function openSettings(tab) {
   const eMode = sel([['auto', 'Automático (liga no Boox)'], ['on', 'Ligado'], ['off', 'Desligado']], st.einkMode || 'auto');
   const eProf = sel([['auto', 'Automático'], ['bw', 'Preto e branco (Go 7)'], ['color', 'Cores (Go Color 7)']], st.einkProfile || 'auto');
   const fPen = chk(st.fastPen !== false), vKeys = chk(st.einkVolumeKeys !== false), lazy = chk(st.syncLazyPdf), otherW = chk(st.linksOtherWindow !== false);
+  const linkOpen = h('select', [['same', 'Abre aqui mesmo (com “voltar”)'], ['split', 'Abre lado a lado (divide a tela)']].map(([v, l]) => h('option', { value: v, selected: (st.linkOpen || 'same') === v ? true : undefined }, l)));
   const eRef = h('input', { type: 'number', min: 0, max: 50 }); eRef.value = st.einkRefresh == null ? 6 : st.einkRefresh;
   const panes = {
     geral: h('div',
@@ -337,7 +338,8 @@ export async function openSettings(tab) {
       h('label.field', h('span', 'E-ink: atualizar a tela inteira a cada quantas páginas (0 = nunca)'), eRef),
       h('label.check', vKeys, h('span', 'E-ink: botões de volume também viram a página')),
       h('label.check', lazy, h('span', 'Baixar os PDFs da sincronização só quando abrir (bom para o celular)')),
-      h('label.check', otherW, h('span', 'Com várias janelas abertas, os links abrem na outra janela')),
+      h('label.field', h('span', 'Link para outro documento (com uma janela só)'), linkOpen),
+      h('label.check', otherW, h('span', 'Com outra janela do app aberta na tela, os links abrem nela')),
       h('h3', 'Tela dividida'),
       h('label.check', cropS, h('span', 'Nos PDFs, cortar as bordas brancas para o texto ocupar a largura do painel (como na Boox)')),
       h('h3', 'Referências'),
@@ -384,7 +386,7 @@ export async function openSettings(tab) {
   modal('Configurações', h('div.settings', tabRow, holder), [
     { label: 'Cancelar' },
     { label: 'Salvar', primary: true, onclick: async c => {
-      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, einkMode: eMode.value, einkProfile: eProf.value, fastPen: fPen.checked, einkVolumeKeys: vKeys.checked, syncLazyPdf: lazy.checked, linksOtherWindow: otherW.checked, einkRefresh: Math.max(0, Math.min(50, +eRef.value || 0)), theme: theme.value, ttsRate: +rate.value };
+      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, einkMode: eMode.value, einkProfile: eProf.value, fastPen: fPen.checked, einkVolumeKeys: vKeys.checked, syncLazyPdf: lazy.checked, linksOtherWindow: otherW.checked, linkOpen: linkOpen.value, einkRefresh: Math.max(0, Math.min(50, +eRef.value || 0)), theme: theme.value, ttsRate: +rate.value };
       for (const k in f) p[k] = f[k].value.trim();
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
@@ -456,7 +458,8 @@ function guideNodes() {
     sec('Várias janelas (DeX, computador)',
       ol('No documento, toque em ⋯ > “Abrir em nova janela”. No DeX com monitor, a janela nova abre no monitor (se o sistema deixar); no computador, abre numa nova aba/janela do navegador.',
         'As janelas ficam iguais na hora: o que você escreve ou destaca numa aparece na outra.',
-        'Com duas janelas abertas, um link abre na outra janela (a usada por último). Para desligar: Configurações > Geral > “os links abrem na outra janela”.',
+        'Com duas janelas abertas na tela, um link abre na outra janela (a usada por último). Se a outra janela estiver fechada ou minimizada, o link abre aqui mesmo. Para desligar: Configurações > Geral.',
+        'Com uma janela só, você escolhe em Configurações > Geral > “Link para outro documento”: abrir aqui mesmo (com “voltar”) ou abrir lado a lado (divide a tela).',
         'Cada janela fecha sozinha com o “voltar” quando não há nada aberto nela.')),
     sec('Arrastar figura ou texto para o caderno ou o texto',
       ul('Recorte uma figura (ferramenta Recortar): na janela que aparece, segure a figura e arraste até a página de um caderno ou até um texto.',
@@ -477,11 +480,22 @@ function guideNodes() {
         'É o próprio PDF recortado (não é refeito): destaques, escrita, notas, links e seleção de texto funcionam normalmente.',
         'Margem para escrever (como na página inteira): toque no botão de margem da barra (ou ⋯ da página > “Abrir margem expandida”). Cada coluna ganha uma faixa pautada ao lado. O que você escreve ali fica na margem da página: aparece também quando você sai do modo artigo.',
         'Na tela dividida continua valendo o corte das bordas brancas.')),
+    sec('Caderno: páginas novas',
+      ul('No fim do caderno há o botão “Nova página”.',
+        'Escreveu perto do fim da última página? A próxima página aparece sozinha embaixo.')),
+    sec('Minhas formas (categorias suas)',
+      ul('No painel de Formas, no seletor do alto, escolha “＋ Nova categoria…” e dê um nome.',
+        'Jeito mais fácil de criar uma forma: desenhe na página com a caneta, selecione com o Laço e toque em “Salvar como forma…” no menu da seleção (ou em “＋ Adicionar” na categoria).',
+        'Também dá para trazer um arquivo: SVG (ideal: só linhas, sem preenchimento, uma cor, com viewBox; vira traço editável) ou imagem PNG/JPG (ideal: PNG com fundo transparente, 400 px ou mais).',
+        'Segure (ou botão direito) numa forma sua para renomear, mover de categoria ou apagar. Suas formas ficam no aparelho e vão junto na cópia de segurança.')),
+    sec('Melhor ajuste da tela',
+      ul('O botão de melhor ajuste no topo corta as bordas brancas do PDF e põe o texto na largura da tela (no modo artigo, a coluna; no texto, a largura toda). Na tela dividida, ajusta os dois lados.',
+        'Toque de novo para voltar à página inteira.')),
     sec('Índice de refração (refractiveindex.info)',
       ul('Três jeitos de abrir: selecione o nome do material no texto e toque em “Índice n,k”; aperte Alt+N no teclado (DeX, computador); ou escolha “Índice de refração dos materiais” na Calculadora física.',
         'Busque pelo nome em português ou inglês, ou pela fórmula (Si, Ge, SiO2, água, ouro, MEH-PPV…). Escolha o material e o conjunto de dados (artigo e faixa de λ).',
         'Digite o λ (ou toque num laser: 405, 532, 633, 785, 1064…, ou no gráfico) e veja n, k, ε₁, ε₂, absorção α, profundidade de penetração, reflexão normal, índice de grupo e λ no material.',
-        'Os dados vêm do banco público do refractiveindex.info (no GitHub) e ficam guardados no aparelho depois da primeira vez. “Abrir no refractiveindex.info” abre a página completa do site no navegador.')),
+        'Os dados vêm do banco público do refractiveindex.info (no GitHub) e ficam guardados no aparelho. Uma vez por semana (com internet) o app confere a fonte e atualiza o catálogo e os materiais que você já usou; há também “Atualizar agora”. “Abrir no refractiveindex.info” abre a página completa do site no navegador.')),
     sec('Desfazer e refazer',
       ul('Os botões ↶ ↷ (e Ctrl+Z, Ctrl+Shift+Z ou Ctrl+Y no teclado) desfazem passo a passo tudo o que você mudou no documento: traços, destaques, notas, caixas de texto, imagens, formas, páginas inseridas ou apagadas, margens, marcadores e o texto.',
         'Cada documento tem a sua própria lista (desfazer num não mexe no outro). A lista vale enquanto o app está aberto.')),
@@ -491,7 +505,7 @@ function guideNodes() {
     sec('Formas e calculadora física (painel da direita)',
       ul('Na barra da esquerda, “Formas” abre o painel da direita. No alto, escolha o tipo: geométricas, perfis de feixe (1D), campos de feixe (2D), componentes ópticos, mecânica quântica, eletromagnetismo e física médica.',
         'Toque numa forma e arraste um retângulo na página. Formas de traço (círculo, esfera, perfil gaussiano, LG, Bessel…) viram traços que você pode apagar e recolorir; campos 2D (gaussiano, LG, HG, Bessel, Airy, vórtice…) entram como imagem.',
-        'Depois de desenhada, a forma fica selecionada: arraste por dentro para mover, o quadradinho do canto muda o tamanho (proporcional) e a bolinha em cima gira (encaixa em 0°, 45°, 90°…). Para mexer depois: ferramenta Laço, toque num traço da forma (pega a forma inteira) ou contorne. No menu da seleção: Girar 90°, Espelhar, Duplicar, cor, Apagar.',
+        'Depois de solta, a ferramenta volta para Selecionar (outro toque não cria outra forma) e a forma fica selecionada; a tecla Delete apaga. Com ela selecionada: arraste por dentro para mover, o quadradinho do canto muda o tamanho (proporcional) e a bolinha em cima gira (encaixa em 0°, 45°, 90°…). Para mexer depois: ferramenta Laço, toque num traço da forma (pega a forma inteira) ou contorne. No menu da seleção: Girar 90°, Espelhar, Duplicar, cor, Apagar.',
         '“Calculadora” abre o mesmo painel com a calculadora física. No alto, escolha: luz e espectro (nm, cm⁻¹, eV, THz…), Raman, feixe gaussiano, foco, pinças ópticas, física médica (dose, dose equivalente, atividade, decaimento, atenuação, inverso do quadrado, raios X), unidades e constantes. Digite em qualquer campo que os outros acompanham.',
         'Constantes: CODATA 2018. Física médica: fatores de peso da radiação da ICRP 103 e meias-vidas tabeladas. Confira valores críticos numa fonte oficial antes de usar em prova ou trabalho.')),
     sec('Compartilhar e favoritos',
