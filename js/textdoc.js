@@ -1,6 +1,7 @@
 // Documento de texto (estilo "documento de texto" do GoodNotes, mas todo em Markdown):
 // blocos que aparecem formatados e viram texto editável ao toque; equações LaTeX numeradas,
 // tabelas, imagens/GIF, vídeo do YouTube, notas de voz, caixas de nota, links e sumário automático.
+import { calloutMenu, calloutMd, listCallouts, calloutIcon } from './callouts.js';
 import * as S from './store.js';
 import { h, clear, btn, icon, toast, modal, popMenu, promptBox, copyText, uid, downloadBlob, shareFile, safeName, bindTwoFingerSwipe } from './util.js';
 import { renderMarkdown, numberAll, headings, slugify, youtubeId, toggleTask, markdownForObsidian, plainText } from './md.js';
@@ -68,6 +69,7 @@ export class TextScreen extends MdEditBase {
     this.idleHint = 'Toque no texto para editar (ou no fim da página para continuar escrevendo).';
     this.root = h('div.reader.textdoc.textbar');
     this.build();
+    S.on('links', () => { if (this.root.isConnected && this.doc && !this.cur) this.paintBacklinks(); });
     S.on('docRemote', d => {
       if (!this.doc || d.id !== this.doc.id || !this.root.isConnected) return;
       Object.assign(this.doc, JSON.parse(JSON.stringify(d)));
@@ -107,7 +109,9 @@ export class TextScreen extends MdEditBase {
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }));
     this.side = h('aside.side');
     this.article = h('article.tdoc.md', { 'aria-label': 'Documento de texto' });
-    this.pane = h('main.tdpane', this.article);
+    this.flow = h('div.tdflow', this.article);
+    this.pane = h('main.tdpane', this.flow);
+    new ResizeObserver(() => { if (this.inkPad && this.inkPad.on) this.inkPad.layout(); }).observe(this.article);
     this.mathPal = buildMathPal(code => this.insertMath(code), () => this.toggleMathPal());
     this.mathPal.classList.add('open');
     this.right = h('aside.rpanel');
@@ -121,12 +125,13 @@ export class TextScreen extends MdEditBase {
       rb('image', 'Imagem ou GIF (colar ou arquivo)', e => this.imageMenu(e)),
       rb('video', 'Vídeo do YouTube', () => this.addVideo()),
       rb('mic', 'Nota de voz', () => this.addAudio()),
-      rb('callout', 'Caixa de nota', () => this.addBlock('> [!nota] Nota\n> @')),
+      rb('callout', 'Caixa de nota (callout): Nota, Dica, Atenção, Pergunta, Exemplo…', e => { const r = e.currentTarget.getBoundingClientRect(); calloutMenu(r.right + 8, r.top, t => this.addBlock(calloutMd(t, '@'))); }),
       tblBtn,
       rb('link', 'Link (selecione o texto antes, ou toque num bloco)', e => this.need() && this.linkMenu(e)),
       rb('list', 'Sumário automático (pelos títulos #, ##, ###)', () => this.addBlock('[[sumario]]')),
       h('div.rsep'),
       rb('sigma', 'Mostrar/esconder os símbolos de matemática', () => this.toggleMathPal()),
+      this.inkBtn = rb('pen', 'Folha de escrita à mão ao lado do texto (S Pen)', () => this.toggleInk()),
       h('div.grow'),
       h('div.penhint', 'Toque num bloco para editar'));
     this.selMenu = h('div.selmenu.tdsel', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
@@ -156,6 +161,7 @@ export class TextScreen extends MdEditBase {
     this.right.classList.remove('open');
     this.mathPal.classList.toggle('open', this.app.split ? !!this.mathPrefSplit : this.mathPrefOpen !== false);
     this.renderAll();
+    this.toggleInk(!!doc.inkOpen, true);
     doc.opened = Date.now();
     S.saveDoc(doc);
     this.app.reader.noteRecent(doc.id);
@@ -165,6 +171,20 @@ export class TextScreen extends MdEditBase {
       else this.pane.scrollTop = doc.lastY || 0;
     });
     if (this.sideOpen) this.renderSide();
+  }
+
+  // ---------- folha de escrita à mão ----------
+  async toggleInk(on, silent) {
+    on = on === undefined ? !(this.inkPad && this.inkPad.on) : !!on;
+    if (on && !this.app.reader.settings) this.app.reader.settings = await S.settings();
+    if (on && !this.inkPad) { const { InkPad } = await import('./inkpad.js'); this.inkPad = new InkPad(this); }
+    if (!this.inkPad) { this.inkBtn.setAttribute('aria-pressed', 'false'); return; }
+    if (on) { if (!this.inkPad.on) this.flow.appendChild(this.inkPad.col); this.inkPad.renderBar(); await this.inkPad.load(); }
+    else this.inkPad.col.remove();
+    this.flow.classList.toggle('withink', on);
+    this.inkBtn.setAttribute('aria-pressed', String(on));
+    if (!silent && this.doc && !!this.doc.inkOpen !== on) { this.doc.inkOpen = on; S.saveDoc(this.doc); }
+    if (!silent && on) toast('Folha de escrita aberta: escreva com a S Pen ao lado do texto. Cada traço acompanha o parágrafo ao lado.', 3500);
   }
 
   // ---------- desenho ----------
@@ -185,15 +205,37 @@ export class TextScreen extends MdEditBase {
       if (editingEl && this.cur.i === i) { this.article.appendChild(editingEl); hp += nh; return; }
       const el = h('div.tblock', { 'data-i': i });
       el.innerHTML = renderMarkdown(s.md, num.starts[i] || 0, num.labels);
-      const mine = all.slice(hp, hp + nh); hp += nh; let k = 0;
-      hydrate(el, { headingId: () => (mine[k++] || {}).id, toc: tocEl, onLink: href => this.onLink(href), onTask: idx => this.toggleTask(i, idx) });
+      const mine = all.slice(hp, hp + nh); hp += nh; let k = 0, c = 0;
+      hydrate(el, { headingId: () => (mine[k++] || {}).id, calloutIds: () => 'co-' + i + '-' + (c++), toc: tocEl, onLink: href => this.onLink(href), onTask: idx => this.toggleTask(i, idx) });
       el.querySelectorAll('table').forEach(t => { t.classList.add('tedit'); t.title = 'Toque para editar a tabela'; });
       this.article.appendChild(el);
     });
     this.article.appendChild(h('div.tdtail', this.blocks.length ? 'Toque aqui para continuar escrevendo' : 'Toque aqui para começar a escrever'));
+    this.paintBacklinks();
     this.pane.scrollTop = scroll;
+    if (this.inkPad) this.inkPad.layout();
     this.updateInfo();
     if (this.sideOpen && this.sideTab === 'sumario') this.renderSide();
+  }
+
+  // links que chegam a este texto: faixa no topo e marcas "←" ao lado dos títulos de destino
+  paintBacklinks() {
+    this.article.querySelectorAll('.backbar, .inmark').forEach(e => e.remove());
+    if (!this.doc || !this.app.linksTo) return;
+    const inc = this.app.linksTo(this.doc.id).filter(l => l.docId !== this.doc.id);
+    if (!inc.length) return;
+    const go = l => this.app.openAt(l.docId, l.pageKey, l.rects ? l.rects[0][1] : 0);
+    const bar = h('div.backbar', h('span.bbl', '← Links de volta:'),
+      inc.slice(0, 6).map(l => h('button.bbchip', { type: 'button', title: (l.text ? '“' + l.text + '”' : '') + ' → ' + pageLabel(l.target.pageKey, this.doc), onclick: e => { e.stopPropagation(); go(l); } }, l.srcTitle + (l.srcLabel ? ' · ' + l.srcLabel : ''))),
+      inc.length > 6 ? h('button.bbchip', { type: 'button', onclick: e => { e.stopPropagation(); this.toggleSide('ligacoes'); } }, '+' + (inc.length - 6)) : null);
+    this.article.prepend(bar);
+    const byKey = new Map();
+    for (const l of inc) if (l.target.pageKey && l.target.pageKey !== 'top') { if (!byKey.has(l.target.pageKey)) byKey.set(l.target.pageKey, []); byKey.get(l.target.pageKey).push(l); }
+    for (const [key, ls] of byKey) {
+      const hd = this.article.querySelector('#' + CSS.escape(key));
+      if (!hd) continue;
+      hd.appendChild(h('button.inmark', { type: 'button', title: 'Links que chegam aqui', onclick: e => { e.stopPropagation(); if (ls.length === 1) go(ls[0]); else popMenu(e.clientX, e.clientY + 8, ls.map(l => ({ icon: 'back', label: 'De: ' + l.srcTitle + ' · ' + l.srcLabel, onclick: () => go(l) }))); } }, '← ' + ls.length));
+    }
   }
 
   tocElement(list) {
@@ -598,7 +640,8 @@ export class TextScreen extends MdEditBase {
       b('digest', 'Digest', () => this.toDigest(i, text)),
       b('marker', 'Realçar', () => this.wrapText(i, text, '==', '==')),
       b('link', 'Link', async () => { const r = await pickLinkTarget(this.doc); if (r) this.wrapText(i, text, r.wiki ? '[[#' + r.wiki + '|' : '[', r.wiki ? ']]' : '](' + r.href + ')'); }),
-      b('note', 'Nota', () => { this.lastI = i; this.addBlock('> [!nota] Sobre “' + text.slice(0, 60) + (text.length > 60 ? '…' : '') + '”\n> @'); }),
+      b('callout', 'Caixa', () => calloutMenu(Math.max(8, rect.left), rect.bottom + 8, t => this.calloutFromSel(i, text, t))),
+      b('note', 'Nota', () => { this.lastI = i; this.addBlock('> [!note] Sobre “' + text.slice(0, 60) + (text.length > 60 ? '…' : '') + '”\n> @'); }),
       b('copy', 'Copiar', () => { copyText(text); toast('Copiado.'); }),
       b('translate', 'Traduzir', () => translatePop(text, rect, this.doc)),
       b('wiki', 'Wikipédia', () => wikiPop(text, rect)));
@@ -627,6 +670,25 @@ export class TextScreen extends MdEditBase {
     this.blocks[i] = src.slice(0, k) + a + src.slice(k, k + len) + z + src.slice(k + len);
     window.getSelection().removeAllRanges();
     this.renderAll(); this.saveNow();
+  }
+
+  // o trecho selecionado vira uma caixa de nota (o resto do parágrafo fica antes e depois)
+  calloutFromSel(i, text, t) {
+    if (i < 0) return;
+    const src = this.blocks[i];
+    let k = src.indexOf(text), len = text.length;
+    if (k < 0) {
+      const re = new RegExp(text.split(/\s+/).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'));
+      const m = re.exec(src); if (m) { k = m.index; len = m[0].length; }
+    }
+    this.snapshot();
+    let parts;
+    if (k < 0) parts = [calloutMd(t, src.replace(/^>\s?/gm, ''))];      // não achou o trecho exato: o bloco inteiro vira caixa
+    else parts = [src.slice(0, k).trim(), calloutMd(t, src.slice(k, k + len).trim()), src.slice(k + len).trim()].filter(Boolean);
+    this.blocks.splice(i, 1, ...parts);
+    window.getSelection().removeAllRanges();
+    this.renderAll(); this.saveNow();
+    toast('Caixa “' + t.label + '” criada.');
   }
 
   nearestHeading(i) {
@@ -661,9 +723,26 @@ export class TextScreen extends MdEditBase {
     sd.appendChild(h('div.stabs', { role: 'tablist' }, tabs.map(([id, l]) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(this.sideTab === id), onclick: () => { this.sideTab = id; this.renderSide(); } }, l))));
     const body = h('div.sbody'); sd.appendChild(body);
     if (this.sideTab === 'sumario') {
-      const list = headings(this.joined());
-      if (!list.length) body.appendChild(h('p.muted.pad', 'Escreva títulos com #, ## ou ### (no começo da linha) e o sumário aparece aqui.'));
-      for (const x of list) body.appendChild(h('button.srow.toc' + Math.min(x.level, 4), { type: 'button', onclick: () => this.scrollToKey(x.id, true) }, h('span.clamp', x.text)));
+      // títulos e caixas de nota, na ordem do texto
+      const f = this.tocFilter || 'tudo';
+      body.appendChild(h('div.chips.pad', [['tudo', 'Tudo'], ['titulos', 'Títulos'], ['caixas', 'Caixas de nota']].map(([id, l]) => h('button.chip', { type: 'button', 'aria-pressed': String(f === id), onclick: () => { this.tocFilter = id; this.renderSide(); } }, l))));
+      const srcs = this.blocks;
+      const all = headings(srcs.join('\n\n'));
+      const cos = listCallouts(srcs);
+      let hp = 0, any = false;
+      const cCount = {};
+      srcs.forEach((md, i) => {
+        const nh = headings(md).length;
+        if (f !== 'caixas') for (const x of all.slice(hp, hp + nh)) { any = true; body.appendChild(h('button.srow.toc' + Math.min(x.level, 4), { type: 'button', onclick: () => this.scrollToKey(x.id, true) }, h('span.clamp', x.text))); }
+        hp += nh;
+        if (f !== 'titulos') for (const c of cos.filter(x => x.i === i)) {
+          any = true;
+          const n = cCount[i] = (cCount[i] || 0); cCount[i]++;
+          const ic = calloutIcon(c.t, 16); ic.style.color = c.t.color;
+          body.appendChild(h('button.srow.cotoc', { type: 'button', onclick: () => this.scrollToKey('co-' + i + '-' + n, true) }, ic, h('div.grow', h('div.clamp', c.title), c.text ? h('div.muted.clamp', c.text.slice(0, 90)) : null)));
+        }
+      });
+      if (!any) body.appendChild(h('p.muted.pad', f === 'caixas' ? 'Nenhuma caixa de nota. Use o botão ▣ da barra lateral, “Caixa” no menu de seleção ou “▣ Caixa” na barra de edição.' : 'Escreva títulos com #, ## ou ### (no começo da linha) e o sumário aparece aqui.'));
     } else if (this.sideTab === 'ligacoes') {
       const docs = await S.allDocs();
       const md = this.joined();
@@ -678,11 +757,11 @@ export class TextScreen extends MdEditBase {
         body.appendChild(h('button.srow', { type: 'button', onclick: () => this.onLink(go ? '#go=' + go[1] + '~' + go[2] + '~0' : o.href.startsWith('digest:') ? '#dg=' + o.href.slice(7) : o.href) }, icon('fwd', 16), h('div.grow', h('div.clamp', o.t || '(link)'), h('div.muted.clamp', '→ ' + where))));
       }
       body.appendChild(h('div.shead', h('span', 'Chegando aqui')));
-      const inc = (this.app.linkIndex || []).filter(a => a.target && a.target.type === 'page' && a.target.docId === this.doc.id && a.docId !== this.doc.id);
+      await this.app.refreshLinkIndex();
+      const inc = this.app.linksTo(this.doc.id).filter(a => a.docId !== this.doc.id);
       if (!inc.length) body.appendChild(h('p.muted.pad', 'Nenhum link aponta para este texto.'));
       for (const a of inc) {
-        const sd2 = docs.find(d => d.id === a.docId);
-        body.appendChild(h('button.srow', { type: 'button', onclick: () => this.app.openAt(a.docId, a.pageKey, a.rects ? a.rects[0][1] : 0) }, icon('back', 16), h('div.grow', h('div.clamp', (sd2 ? S.docTitle(sd2) : '?') + ' · ' + pageLabel(a.pageKey, sd2)), h('div.muted.clamp', a.text || ''))));
+        body.appendChild(h('button.srow', { type: 'button', onclick: () => this.app.openAt(a.docId, a.pageKey, a.rects ? a.rects[0][1] : 0) }, icon('back', 16), h('div.grow', h('div.clamp', a.srcTitle + ' · ' + a.srcLabel), h('div.muted.clamp', (a.text ? '“' + a.text + '” ' : '') + '→ ' + pageLabel(a.target.pageKey, this.doc)))));
       }
     } else {
       const inp = h('input', { type: 'search', placeholder: 'Buscar neste texto…', value: this.q || '' });

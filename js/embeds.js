@@ -3,9 +3,9 @@
 import { h, icon } from './util.js';
 import { fileUrl } from './notebook.js';
 import { slugify } from './md.js';
+import { decorateCallout } from './callouts.js';
 import { isEink, freezeIfGif } from './eink.js';
 
-const CALLOUTS = { note: 'Nota', nota: 'Nota', info: 'Info', tip: 'Dica', dica: 'Dica', warning: 'Atenção', atencao: 'Atenção', atenção: 'Atenção', question: 'Pergunta', pergunta: 'Pergunta', important: 'Importante', importante: 'Importante', quote: 'Citação', example: 'Exemplo', exemplo: 'Exemplo', todo: 'A fazer' };
 
 export function ytPlayer(id, t) {
   const box = h('div.ytbox');
@@ -56,13 +56,13 @@ export function hydrate(el, ctx = {}) {
   el.querySelectorAll('blockquote').forEach(bq => {
     const p = bq.firstElementChild;
     if (!p || p.tagName !== 'P') return;
-    const m = p.innerHTML.match(/^\s*\[!([\wçã]+)\]([+-]?)\s*([^<\n]*)(<br>)?/i);
+    const m = p.innerHTML.match(/^\s*\[!([\wÀ-ÿ-]+)\]([+-]?)\s*([^<\n]*)(<br>)?/i);
     if (!m) return;
-    const type = m[1].toLowerCase();
     p.innerHTML = p.innerHTML.slice(m[0].length);
     if (!p.textContent.trim() && !p.querySelector('img, .katex')) p.remove();
-    bq.classList.add('callout', 'co-' + type.normalize('NFD').replace(/[̀-ͯ]/g, ''));
-    bq.prepend(h('div.cotitle', m[3].trim() || CALLOUTS[type] || type));
+    const t = decorateCallout(bq, m[1], m[2], m[3].trim());
+    if (ctx.calloutIds) bq.id = ctx.calloutIds();
+    void t;
   });
   // sumário ([[sumario]])
   el.querySelectorAll('div.toc-ph').forEach(d => { const t = ctx.toc && ctx.toc(); if (t) d.replaceWith(t); else d.remove(); });

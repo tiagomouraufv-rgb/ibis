@@ -66,6 +66,7 @@ export class Reader {
       if (!this.root.isConnected || !this.isFront()) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); this.redo(); }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); this.pageJump(this.pagePill); }
     });
   }
 
@@ -75,7 +76,8 @@ export class Reader {
   buildChrome() {
     const r = this.root;
     this.titleEl = h('div.rtitle');
-    this.pageEl = h('div.rpage');
+    this.pageEl = h('button.rpage', { type: 'button', title: 'Ir para a página… (Ctrl+G)', onclick: e => this.pageJump(e.currentTarget) });
+    this.pagePill = h('button.pagepill', { type: 'button', title: 'Ir para a página…', onclick: e => this.pageJump(e.currentTarget) });
     this.backBtn = btn('undo', 'Voltar', () => this.goBack(), { cls: 'sbtn backlink', title: 'Voltar ao ponto anterior' });
     this.backBtn.style.display = 'none';
     this.recBtn = btn('rec', '', () => this.toggleRec(), { title: 'Gravar sessão (áudio sincronizado com a escrita)', iconOnly: true });
@@ -95,7 +97,7 @@ export class Reader {
       btn('swap', '', e => this.recentMenu(e), { title: 'Arquivos recentes (ou deslize dois dedos na página)', iconOnly: true }),
       hideTb(btn('search', '', () => this.toggleSide('busca'), { title: 'Buscar no PDF', iconOnly: true })),
       hideTb(btn('split', '', () => this.toggleSplit(), { title: 'Lado a lado', iconOnly: true, cls: 'ibtn no-eink' })),
-      hideTb(btn('article', '', () => this.openArticle(), { title: 'Modo artigo: só o texto, em letra grande', iconOnly: true, cls: 'ibtn notnb' })),
+      this.articleBtn = hideTb(btn('columns', '', () => this.openArticle(), { title: 'Modo artigo: uma coluna do PDF por vez, na largura da tela', iconOnly: true, cls: 'ibtn notnb' })),
       hideTb(this.modeBtn),
       hideTb(this.recBtn),
       hideTb(btn('digest', 'Digest', () => this.app.showDigest(), { cls: 'sbtn hide-sm' })),
@@ -131,7 +133,7 @@ export class Reader {
     this.pill = h('div.pill');
     this.selMenu = h('div.selmenu', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
     this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal());
-    r.append(top, h('div.rbody', rail, this.side, this.panes, this.mathPal, this.right), this.selMenu, this.pill);
+    r.append(top, h('div.rbody', rail, this.side, h('div.panewrap', this.panes, this.pagePill), this.mathPal, this.right), this.selMenu, this.pill);
     this.bindSwipe();
   }
 
@@ -231,7 +233,8 @@ export class Reader {
     if (!nb) this.app.indexDoc(this.doc);
     this.noteRecent(this.doc.id);
     // tela dividida: PDF com as bordas cortadas (texto na largura do painel)
-    if (!nb && this.active) this.active.setCrop(this.cropManual !== undefined ? this.cropManual : (this.app.split && (this.settings || {}).cropInSplit !== false));
+    if (!nb && this.active) this.active.setCrop(this.cropManual !== undefined ? this.cropManual : (this.app.split && (this.settings || {}).cropInSplit !== false)).then(() => { if (this.active && this.active.doc && this.active.doc.colMode && !this.active.colMode) this.openArticle(true); });
+    this.articleBtn.setAttribute('aria-pressed', 'false');
   }
 
   addViewer() {
@@ -283,10 +286,17 @@ export class Reader {
     if (v.paged) { if (!v.turn(dir)) toast(dir > 0 ? 'Última página.' : 'Primeira página.', 1200); return; }
     v.scroller.scrollBy({ top: dir * (v.scroller.clientHeight - 40) });
   }
-  async openArticle() {
-    if (!this.active || !this.active.hd) { toast('O modo artigo é para PDFs.'); return; }
-    const { openArticle } = await import('./article.js');
-    openArticle(this);
+  // modo artigo: liga/desliga o recorte por colunas (fica lembrado no documento)
+  async openArticle(force) {
+    const v = this.active;
+    if (!v || !v.hd) { toast('O modo artigo é para PDFs.'); return; }
+    const on = force === undefined ? !v.colMode : !!force;
+    await v.setArticle(on);
+    this.articleBtn.setAttribute('aria-pressed', String(!!v.colMode));
+    if (force === undefined) {
+      v.doc.colMode = on; S.saveDoc(v.doc);
+      if (on) { const any = v.colLayout && [...v.colLayout.values()].some(Boolean); toast(any ? 'Modo artigo: uma coluna por vez. Toque de novo no botão para voltar à página inteira.' : 'Não achei duas colunas neste PDF: mostrando as páginas com as bordas cortadas.', 3500); }
+    }
   }
 
   renderColors() {
@@ -336,10 +346,50 @@ export class Reader {
     const p = v.pages.find(x => x.key === k);
     const N = v.hd ? v.hd.pdf.numPages : v.pages.length;
     this.pageEl.textContent = p ? (p.kind === 'pdf' ? 'p. ' + p.n + ' de ' + N : p.kind === 'nb' ? 'Página ' + p.n + ' de ' + N : 'página em branco') : '';
+    const idx = p ? (p.kind === 'pdf' || p.kind === 'nb' ? p.n : null) : null;
+    this.pagePill.textContent = idx ? idx + ' / ' + N : '—';
     this.backBtn.style.display = (v.hist.length || this.docHist.length) ? '' : 'none';
     this.toolBtns && this.root.querySelector('[title="Margem expandida nesta página"]').setAttribute('aria-pressed', String(!!(v.doc.margins && v.doc.margins[k])));
   }
   onZoom() {}
+
+  // link no formato do app ([Título, p. 3](leitor://…)): colado num texto ou numa caixa de caderno, vira link (e link de volta)
+  copyPageLink(v, key, y) {
+    const md = '[' + S.docTitle(v.doc) + ', ' + pageLabel(key, v.doc) + '](leitor://' + v.doc.id + '/' + key + (y ? '?y=' + Math.round(y) : '') + ')';
+    copyText(md);
+    toast('Link copiado. Cole num texto ou numa caixa de texto de caderno.');
+  }
+
+  // mostrador de página: digitar o número (ou arrastar) e ir
+  pageJump(anchor) {
+    const v = this.active; if (!v || !v.doc) return;
+    document.querySelectorAll('.pagejump').forEach(x => x.remove());
+    const nums = v.pages.filter(p => p.kind === 'pdf' || p.kind === 'nb');
+    const N = nums.length; if (!N) return;
+    const cur = v.pages.find(p => p.key === v.currentKey());
+    const curN = cur && cur.n ? cur.n : 1;
+    const inp = h('input', { type: 'number', min: 1, max: N, value: curN, inputmode: 'numeric', 'aria-label': 'Número da página' });
+    const rng = h('input', { type: 'range', min: 1, max: N, value: curN, 'aria-label': 'Página' });
+    const go = n => {
+      n = Math.max(1, Math.min(N, Math.round(+n || 1)));
+      const p = nums.find(x => x.n === n) || nums[n - 1];
+      if (p) { v.goTo(p.key, 0, { exact: true }); this.onNav(v); }
+      box.remove(); document.removeEventListener('pointerdown', off, true);
+    };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(inp.value); if (e.key === 'Escape') { box.remove(); } });
+    rng.addEventListener('input', () => { inp.value = rng.value; });
+    rng.addEventListener('change', () => go(rng.value));
+    const box = h('div.pagejump', { role: 'dialog', 'aria-label': 'Ir para a página' },
+      h('div.pjrow', h('span', 'Página'), inp, h('span.muted', 'de ' + N), h('button.pbtn', { type: 'button', onclick: () => go(inp.value) }, 'Ir')),
+      rng,
+      h('div.pjrow.small', h('button.linkbtn', { type: 'button', onclick: () => go(1) }, 'Primeira'), h('div.grow'), v.hist.length ? h('button.linkbtn', { type: 'button', onclick: () => { box.remove(); this.goBack(); } }, 'Voltar ao ponto anterior') : null, h('div.grow'), h('button.linkbtn', { type: 'button', onclick: () => go(N) }, 'Última')));
+    document.body.appendChild(box);
+    const r = anchor.getBoundingClientRect(), br = box.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(innerWidth - br.width - 8, r.left + r.width / 2 - br.width / 2)) + 'px';
+    box.style.top = (r.bottom + br.height + 12 < innerHeight ? r.bottom + 8 : Math.max(8, r.top - br.height - 8)) + 'px';
+    const off = e => { if (!box.contains(e.target) && e.target !== anchor) { box.remove(); document.removeEventListener('pointerdown', off, true); } };
+    setTimeout(() => { document.addEventListener('pointerdown', off, true); inp.focus(); inp.select(); }, 0);
+  }
 
   async goBack() {
     const v = this.active;
@@ -503,6 +553,8 @@ export class Reader {
       return;
     }
     if (!list.length) body.appendChild(h('p.muted.pad', 'Nada aqui ainda.'));
+    // links de volta aparecem junto (em "Todas" e em "Links")
+    const showInc = f === 'todas' || f === 'link';
     for (const a of list) {
       const ci = catInfo(a.cat);
       const y = a.rects ? a.rects[0][1] : a.y || 0;
@@ -512,6 +564,7 @@ export class Reader {
         h('div.grow', h('div.clamp', txt), a.note ? h('div.muted.clamp', 'Nota: ' + a.note) : null),
         h('span.muted', pageLabel(a.pageKey))));
     }
+    if (showInc) { const inc = this.app.linksTo(v.doc.id); if (inc.length || f === 'link') this.renderIncoming(body, v, inc); }
   }
 
   async sideSearch(body, v) {
@@ -576,20 +629,28 @@ export class Reader {
   }
 
   async sideLinks(body, v) {
-    const docs = await S.allDocs();
-    const all = await S.allAnnots();
-    const out = all.filter(a => a.kind === 'link' && a.docId === v.doc.id);
-    const inc = all.filter(a => a.kind === 'link' && a.target && a.target.type === 'page' && a.target.docId === v.doc.id);
+    await this.app.refreshLinkIndex();
+    const out = this.app.linksFrom(v.doc.id);
+    const inc = this.app.linksTo(v.doc.id);
     body.appendChild(h('div.shead', h('span', 'Saindo deste documento'), btn('plus', 'Novo link', () => this.linkBuilder(v, { pageKey: v.currentKey(), rects: [[10, 10, 60, 14]], text: '', pageLink: true }), { cls: 'sbtn small' })));
     if (!out.length) body.appendChild(h('p.muted.pad', 'Selecione um trecho e toque em “Link”, ou use a ferramenta de link (retângulo) na barra lateral.'));
-    for (const a of out) body.appendChild(h('div.srow', h('button.grow.linkrow', { type: 'button', onclick: () => v.goTo(a.pageKey, a.rects[0][1], { flash: true }) }, h('div.clamp', (a.text ? '“' + a.text.slice(0, 60) + '” ' : '') + '→ ' + (a.targetLabel || '')), h('div.muted', pageLabel(a.pageKey, v.doc))),
-      btn('fwd', '', () => this.followLink(v, a), { iconOnly: true, title: 'Seguir o link' })));
-    body.appendChild(h('div.shead', h('span', 'Chegando aqui (links de volta)')));
+    const docs = await S.allDocs();
+    for (const a of out) {
+      const td = a.target && a.target.docId ? docs.find(d => d.id === a.target.docId) : null;
+      const where = a.targetLabel || (td ? S.docTitle(td) + ' · ' + pageLabel(a.target.pageKey, td) : (a.target && a.target.type) || '');
+      body.appendChild(h('div.srow', h('button.grow.linkrow', { type: 'button', onclick: () => v.goTo(a.pageKey, a.rects[0][1], { flash: true }) }, h('div.clamp', (a.text ? '“' + a.text.slice(0, 60) + '” ' : '') + '→ ' + where), h('div.muted', pageLabel(a.pageKey, v.doc) + (a.fromMd ? ' · caixa de texto' : ''))),
+        btn('fwd', '', () => a.fromMd ? this.jump(a.target, v) : this.followLink(v, a), { iconOnly: true, title: 'Seguir o link' })));
+    }
+    this.renderIncoming(body, v, inc);
+  }
+
+  // lista dos links que chegam a este documento (painel Ligações e painel Anotações)
+  renderIncoming(body, v, inc) {
+    body.appendChild(h('div.shead', h('span', 'Chegando aqui (links de volta) · ' + inc.length)));
     if (!inc.length) body.appendChild(h('p.muted.pad', 'Nenhum link aponta para este documento.'));
     for (const a of inc) {
-      const sd = docs.find(d => d.id === a.docId);
-      body.appendChild(h('button.srow', { type: 'button', onclick: () => this.jump({ docId: a.docId, pageKey: a.pageKey, y: a.rects[0][1] }) },
-        icon('back', 16), h('div.grow', h('div.clamp', (sd ? S.docTitle(sd) : '?') + ' · ' + pageLabel(a.pageKey, sd)), h('div.muted.clamp', (a.text || '') + ' → ' + pageLabel(a.target.pageKey, v.doc)))));
+      body.appendChild(h('button.srow', { type: 'button', onclick: () => this.jump({ docId: a.docId, pageKey: a.pageKey, y: a.rects[0][1] }, v) },
+        icon('back', 16), h('div.grow', h('div.clamp', a.srcTitle + ' · ' + a.srcLabel), h('div.muted.clamp', (a.text ? '“' + a.text.slice(0, 60) + '” ' : '') + '→ ' + pageLabel(a.target.pageKey, v.doc)))));
     }
   }
 
@@ -605,6 +666,7 @@ export class Reader {
     const mg = !!(v.doc.margins && v.doc.margins[p.key]);
     popMenu(x, y, [
       { icon: 'bookmark', label: bm ? 'Remover marcador' : 'Marcar esta página', onclick: () => this.toggleBookmark(p.key, v) },
+      { icon: 'link', label: 'Copiar link desta página (colar num texto ou caderno)', onclick: () => this.copyPageLink(v, p.key) },
       { icon: 'blank', label: 'Inserir página em branco depois', onclick: () => this.insertBlank(v, p, false) },
       p.index === 0 ? { icon: 'blank', label: 'Inserir página em branco antes', onclick: () => this.insertBlank(v, p, true) } : null,
       { icon: 'margin', label: mg ? 'Fechar margem expandida' : 'Abrir margem expandida', onclick: () => { this.active = v; this.toggleMargin(p.key); } },
@@ -1282,6 +1344,7 @@ export class Reader {
     const bm = (v.doc.bookmarks || []).some(b => b.key === p.key);
     popMenu(x, y, [
       { icon: 'plus', label: 'Nova página depois desta', onclick: () => this.nbAddPage(v, p.index) },
+      { icon: 'link', label: 'Copiar link desta página (colar num texto ou caderno)', onclick: () => this.copyPageLink(v, p.key) },
       { icon: 'copy', label: 'Duplicar página', onclick: async () => { await NB.duplicatePage(v.doc, p.index); await this.nbRefresh(v); } },
       p.tpl === 'cover' ? { icon: 'notebook', label: 'Cor da capa…', onclick: () => this.coverMenu(v.doc, x, y, () => this.nbRefresh(v)) } : null,
       p.tpl === 'cover' ? null : { icon: 'pages', label: 'Modelo da página…', onclick: () => popMenu(x, y, NB.TEMPLATES.map(([id, l]) => ({ label: (p.tpl === id ? '✓ ' : '') + l, onclick: async () => { await NB.setTemplate(v.doc, p.index, id); await this.nbRefresh(v); } }))) },
@@ -1319,8 +1382,7 @@ export class Reader {
       nb ? null : { icon: 'blank', label: 'Inserir página em branco depois desta', onclick: () => { const v = this.active; this.insertBlank(v, v.pages.find(p => p.key === v.currentKey()), false); } },
       { icon: 'bookmark', label: 'Marcar esta página', onclick: () => this.toggleBookmark(this.active.currentKey()) },
       nb ? null : { icon: 'crop', label: (this.active && this.active.cropBox ? '✓ ' : '') + 'Cortar as bordas (texto na largura da tela)', onclick: () => { this.cropManual = !(this.active && this.active.cropBox); this.active.setCrop(this.cropManual); } },
-      nb ? null : { icon: 'article', label: 'Modo artigo (só o texto, letra ajustável)', onclick: () => this.openArticle() },
-      nb || !eink ? null : { icon: 'columns', label: (this.active && this.active.columns ? '✓ ' : '') + 'Modo colunas (artigo em duas colunas)', onclick: () => this.active.setColumns(!this.active.columns) },
+      nb ? null : { icon: 'columns', label: (this.active && this.active.colMode ? '✓ ' : '') + 'Modo artigo (uma coluna por vez)', onclick: () => this.openArticle() },
       !eink ? null : { icon: 'fitpage', label: ((this.settings || {}).pageFit ? '✓ ' : '') + 'Página inteira na tela', onclick: async () => { await S.setSettings({ pageFit: !(this.settings || {}).pageFit }); this.settings = await S.settings(); this.viewers.forEach(x => x.relayout(true)); } },
       !eink ? null : { icon: 'refresh', label: 'Limpar a tela agora (atualização completa)', onclick: () => flash() },
       eink ? null : { icon: 'split', label: this.app.split ? 'Fechar a tela dividida' : 'Dividir a tela', onclick: () => this.toggleSplit() },

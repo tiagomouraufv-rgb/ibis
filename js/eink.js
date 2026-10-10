@@ -100,13 +100,15 @@ export const fastPen = {
     const st = await S.settings();
     const want = !!(r && isEink() && st.fastPen !== false && this.supported() && r.root.isConnected && r.active && r.doc &&
       ['pen', 'marker', 'eraser'].includes(r.tool) && !document.querySelector(BLOCKERS) && document.visibilityState === 'visible');
-    if (!want) { if (this.on) { try { N.penStop(); } catch (e) {} this.on = false; } return; }
+    if (!want) { if (this.on) { try { N.penStop(); } catch (e) {} this.on = false; this.last = ''; } return; }
     const v = r.active, rc = v.scroller.getBoundingClientRect();
     const ex = [...document.querySelectorAll(FLOATERS)].filter(e => e.offsetParent || getComputedStyle(e).position === 'fixed')
       .map(e => e.getBoundingClientRect()).filter(b => b.width && b.height && b.bottom > rc.top && b.top < rc.bottom && b.right > rc.left && b.left < rc.right)
       .map(b => [b.left, b.top, b.right, b.bottom]);
     const w = (r.tool === 'marker' ? 11 : (st.penWidth || 2)) * v.scale;
-    try { N.penStart(JSON.stringify({ l: rc.left, t: rc.top, r: rc.right, b: rc.bottom, ex, w })); this.on = true; } catch (e) { this.fail(String(e)); }
+    const json = JSON.stringify({ l: Math.round(rc.left), t: Math.round(rc.top), r: Math.round(rc.right), b: Math.round(rc.bottom), ex: ex.map(q => q.map(Math.round)), w: +w.toFixed(1) });
+    if (this.on && json === this.last) return;   // nada mudou: não reinicia a caneta (deixava a Boox lenta)
+    try { N.penStart(json); this.on = true; this.last = json; } catch (e) { this.fail(String(e)); }
   },
   fail(msg) {
     this.failed = true; this.on = false;

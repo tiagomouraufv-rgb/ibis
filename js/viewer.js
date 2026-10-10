@@ -7,6 +7,7 @@ import { hydrate } from './embeds.js';
 import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
 import { headings } from './md.js';
 import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif } from './eink.js';
+import { columnLayout } from './columns.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const MARGIN_FRAC = 0.5;    // margem expandida = metade da largura da página
@@ -51,14 +52,20 @@ export class Viewer {
     this.zoom = 1; this.scale = 1; this.hist = [];
     this.penDown = false; this.pointers = new Map();
     this.bindInput();
-    this.io = new IntersectionObserver(es => this.onIntersect(es), { root: this.scroller, rootMargin: '900px 0px' });
+    // e-ink: prepara menos páginas fora da tela (aparelho mais lento, pouca memória)
+    this.io = new IntersectionObserver(es => this.onIntersect(es), { root: this.scroller, rootMargin: isEink() ? '300px 0px' : '900px 0px' });
     this.ro = new ResizeObserver(() => { if (this.doc && Math.abs(this.lastWidth - this.scroller.clientWidth) > 4) this.relayout(true); });
     this.ro.observe(this.scroller);
     this.offAnn = S.on('annots', e => { if (this.doc && e.docId === this.doc.id) this.redrawOverlays(e.pageKey); });
+    // o índice de ligações mudou (link criado aqui, em outro documento ou em outra janela): redesenha os links de volta
+    this.offLinks = S.on('links', () => { if (this.doc) for (const sl of this.slots.values()) this.drawOverlay(sl); });
     this.scroller.addEventListener('scroll', () => this.onScroll(), { passive: true });
     // celular/tablet/e-ink mudou (Fold aberto, Boox): refaz o modo e o encaixe da página
     this.offForm = S.on('form', () => { if (!this.doc) return; this.applyMode(); this.relayout(true); });
   }
+
+  // escala de uma parte da página (no modo artigo a faixa do título pode ser menor)
+  k(s) { return (s && s.sc) || this.scale; }
 
   // e-ink: a página vira (não rola)
   get paged() { return isEink(); }
@@ -84,10 +91,11 @@ export class Viewer {
     });
   }
 
-  destroy() { this.offAnn(); this.offForm && this.offForm(); this.io.disconnect(); this.ro.disconnect(); this.el.remove(); }
+  destroy() { this.offAnn(); this.offLinks && this.offLinks(); this.offForm && this.offForm(); this.io.disconnect(); this.ro.disconnect(); this.el.remove(); }
 
   async open(doc, at) {
     this.cropBox = null;
+    this.colMode = false; this.colLayout = null;
     this.doc = doc;
     this.clearSelection();
     this.hd = isNotebook(doc) ? null : await openPdf(doc);
@@ -129,12 +137,54 @@ export class Viewer {
     this.goTo(this.slots.has(k) ? k : this.pages[0].key, 0, { noHist: true });
   }
 
-  listPages() { return isNotebook(this.doc) ? nbPageList(this.doc) : pageList(this.doc, this.hd); }
+  listPages() {
+    if (isNotebook(this.doc)) return nbPageList(this.doc);
+    const pages = pageList(this.doc, this.hd);
+    if (!this.colMode || !this.colLayout) return pages;
+    // modo artigo: cada página vira suas partes (cabeçalho largo, coluna 1, coluna 2), uma embaixo da outra
+    const out = [];
+    for (const p of pages) {
+      const boxes = p.kind === 'pdf' ? this.colLayout.get(p.n) : null;
+      if (!boxes) { out.push(Object.assign({}, p, { box: p.kind === 'pdf' && this.cropBox ? this.cropBox : null })); continue; }
+      boxes.forEach((b, i) => out.push(Object.assign({}, p, { sid: i ? p.key + '#' + i : p.key, box: b, part: i, parts: boxes.length, head: boxes.length === 3 && i === 0 })));
+    }
+    // a faixa larga do alto (título, resumo) é reduzida para caber na largura de uma coluna
+    const colW = Math.max(...out.filter(p => p.box && !p.head).map(p => p.w * p.box[2]), 1);
+    for (const p of out) if (p.head) p.fit = Math.min(1, colW / (p.w * p.box[2]));
+    return out;
+  }
+
+  // modo artigo: uma coluna do PDF por vez, na largura da tela (o texto não é refeito: é o próprio PDF recortado)
+  async setArticle(on) {
+    if (!this.hd) return false;
+    on = !!on;
+    if (on === !!this.colMode) return true;
+    const k = this.currentKey();
+    const docId = this.doc.id;
+    if (on) {
+      this.cropBefore = !!this.cropBox;
+      const box = cropCache.get(docId) || await detectCrop(this.hd);
+      cropCache.set(docId, box);
+      const N = this.hd.pdf.numPages;
+      const prog = N > 24 ? (n, t) => this.app.showPill && this.app.showPill('Achando as colunas… ' + Math.round(n / t * 100) + '%') : null;
+      const lay = await columnLayout(this.hd, docId, prog);
+      if (this.app.hidePill && prog) this.app.hidePill();
+      if (!this.doc || this.doc.id !== docId) return false;
+      this.colLayout = lay;
+      this.cropBox = box;
+      if (![...lay.values()].some(Boolean)) { this.colMode = true; }
+    } else if (!this.cropBefore) this.cropBox = null;
+    this.colMode = on;
+    this.pages = this.listPages();
+    this.build();
+    requestAnimationFrame(() => this.goTo(k, 0, { noHist: true, exact: true }));
+    return true;
+  }
   get isNb() { return isNotebook(this.doc); }
 
   fitScale() {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
-    const maxW = Math.max(...this.pages.map(p => p.w * (this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1)), 1) * (anyMargin ? 1 + MARGIN_FRAC : 1);
+    const maxW = Math.max(...this.pages.map(p => p.w * (p.fit || 1) * (p.box ? p.box[2] : this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1)), 1) * (anyMargin && !this.colMode ? 1 + MARGIN_FRAC : 1);
     const avail = Math.max(200, this.scroller.clientWidth - 28);
     // e-ink com "página inteira": a página cabe na altura da tela (sem rolar dentro dela)
     if (this.paged && (this.app.settings || {}).pageFit && !this.columns) {
@@ -146,6 +196,7 @@ export class Viewer {
   }
 
   build() {
+    this.pageKeys = null;
     this.io.disconnect();
     clear(this.pagesEl);
     this.slots.clear();
@@ -171,11 +222,11 @@ export class Viewer {
       svg.appendChild(live);
       const clip = h('div.slotclip', slot);   // recorte das margens (modo "cortar bordas")
       const wrap = h('div.slotwrap', head, clip);
-      wrap.dataset.key = p.key;
+      wrap.dataset.key = p.sid || p.key;
       slot.dataset.key = p.key;
       this.pagesEl.appendChild(wrap);
       const s = { p, wrap, slot, clip, pg, mg, svg, live, head, tbl, iml, rendered: 0, renderTask: null };
-      this.slots.set(p.key, s);
+      this.slots.set(p.sid || p.key, s);
       this.sizeSlot(s);
       this.io.observe(wrap);
       this.drawOverlay(s);
@@ -187,9 +238,11 @@ export class Viewer {
 
   sizeSlot(s) {
     const { p } = s;
-    const sc = this.scale;
-    const mw = this.hasMargin(p.key) ? p.w * MARGIN_FRAC : 0;
-    const cb = this.cropBox && p.kind === 'pdf' && !mw ? this.cropBox : null;
+    const sc = this.scale * (p.fit || 1);
+    s.sc = sc;
+    const mw = this.hasMargin(p.key) && !p.box ? p.w * MARGIN_FRAC : 0;
+    const cb = p.box || (this.cropBox && p.kind === 'pdf' && !mw ? this.cropBox : null);
+    s.cb = cb;
     if (cb) {
       const [fx, fy, fw, fh] = cb;
       s.wrap.style.width = (p.w * fw * sc) + 'px';
@@ -253,11 +306,12 @@ export class Viewer {
 
   renderVisible() {
     const vis = [...this.slots.values()].filter(s => s.visible);
-    for (const s of vis) if (s.rendered !== this.scale) this.renderSlot(s);
+    for (const s of vis) if (s.rendered !== this.k(s)) this.renderSlot(s);
     // libera memória de páginas distantes
     const idx = vis.map(s => s.p.index);
     if (idx.length) {
-      const lo = Math.min(...idx) - 4, hi = Math.max(...idx) + 4;
+      const keep = isEink() ? 2 : 4;
+      const lo = Math.min(...idx) - keep, hi = Math.max(...idx) + keep;
       for (const s of this.slots.values()) if ((s.p.index < lo || s.p.index > hi) && s.canvas) {
         s.canvas.remove(); s.canvas = null; if (s.text) { s.text.remove(); s.text = null; } s.rendered = 0;
       }
@@ -265,22 +319,28 @@ export class Viewer {
   }
 
   async renderSlot(s) {
-    if (s.p.kind !== 'pdf') { s.rendered = this.scale; return; }
-    const scale = this.scale;
+    if (s.p.kind !== 'pdf') { s.rendered = this.k(s); return; }
+    const scale = this.k(s);
     s.rendered = scale;
     if (s.renderTask) { try { s.renderTask.cancel(); } catch (e) {} }
     const hd = this.hd;
-    if (!hd || this.slots.get(s.p.key) !== s) return;   // documento trocado no meio do caminho
+    if (!hd || this.slots.get(s.p.sid || s.p.key) !== s) return;   // documento trocado no meio do caminho
     let page;
     try { page = await getPage(hd, s.p.n); } catch (e) { return; }
     if (s.rendered !== scale || this.hd !== hd) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    // e-ink: menos pixels (a tela não mostra a diferença e o aparelho fica bem mais leve)
+    const eink = isEink();
+    const dpr = Math.min(window.devicePixelRatio || 1, eink ? 1.5 : 2.5);
     let ps = scale * dpr;
-    const maxPix = 14e6;
-    if (s.p.w * s.p.h * ps * ps > maxPix) ps = Math.sqrt(maxPix / (s.p.w * s.p.h));
-    const vp = page.getViewport({ scale: ps });
+    // página recortada (bordas cortadas ou modo artigo): desenha só a parte que aparece
+    const cb = s.cb || [0, 0, 1, 1];
+    const rw = s.p.w * cb[2], rh = s.p.h * cb[3];
+    const maxPix = eink ? 5e6 : 14e6;
+    if (rw * rh * ps * ps > maxPix) ps = Math.sqrt(maxPix / (rw * rh));
+    const vp = page.getViewport({ scale: ps, offsetX: -s.p.w * cb[0] * ps, offsetY: -s.p.h * cb[1] * ps });
     const c = h('canvas.pdfc');
-    c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+    c.width = Math.max(1, Math.floor(rw * ps)); c.height = Math.max(1, Math.floor(rh * ps));
+    if (s.cb) Object.assign(c.style, { left: (cb[0] * 100) + '%', top: (cb[1] * 100) + '%', width: (cb[2] * 100) + '%', height: (cb[3] * 100) + '%', right: 'auto', bottom: 'auto' });
     const task = page.render({ canvasContext: c.getContext('2d', { alpha: false }), viewport: vp });
     s.renderTask = task;
     try { await task.promise; } catch (e) { return; }
@@ -314,9 +374,19 @@ export class Viewer {
         for (const s of this.slots.values()) this.drawBoxes(s);
       }
       if (this.sel) this.refreshSelection();
-      if (pageKey && this.slots.has(pageKey)) this.drawOverlay(this.slots.get(pageKey));
+      if (pageKey) { for (const sl of this.slots.values()) if (sl.p.key === pageKey) this.drawOverlay(sl); }
       else for (const s of this.slots.values()) this.drawOverlay(s);
     });
+  }
+
+  // links que chegam a esta página; os que apontam para o documento inteiro aparecem na 1ª página
+  incomingHere(s) {
+    const app = this.app.app;
+    if (!app || !app.linksTo || !this.doc) return [];
+    if (!this.pageKeys) this.pageKeys = new Set(this.pages.map(p => p.key));
+    const first = this.pages[0] && this.pages[0].key;
+    if (s.p.sid && s.p.sid !== s.p.key) return [];   // modo artigo: só na 1ª parte da página
+    return app.linksTo(this.doc.id).filter(l => (l.target.pageKey === s.p.key || (!this.pageKeys.has(l.target.pageKey) && s.p.key === first)) && !(l.docId === this.doc.id && l.pageKey === s.p.key));
   }
 
   annsOf(key) { return (this.anns || []).filter(a => a.pageKey === key); }
@@ -389,15 +459,31 @@ export class Viewer {
       n.appendChild(t);
       g.appendChild(n);
     }
-    // links que chegam nesta página (de outros documentos ou deste)
-    const inc = (this.app.incomingLinks && this.app.incomingLinks(this.doc.id, s.p.key)) || [];
+    // links que chegam nesta página (de outros documentos ou deste): etiqueta "← origem" na borda direita
+    s.inPills = [];
+    const inc = this.incomingHere(s);
     if (inc.length) {
-      const y0 = Math.min(...inc.map(l => l.target.y || 0));
-      const m = sv('g', { class: 'inlink', transform: `translate(${s.p.w - 14} ${Math.max(10, y0 + 8)})` });
-      m.appendChild(sv('circle', { cx: 0, cy: 0, r: 7, fill: '#1D5A8A' }));
-      const t = sv('text', { x: 0, y: 3, 'text-anchor': 'middle', 'font-size': 8, fill: '#fff', 'font-weight': 700 }); t.textContent = '←';
-      m.appendChild(t);
-      g.appendChild(m);
+      const groups = [];
+      for (const l of inc.slice().sort((a, b) => (a.target.y || 0) - (b.target.y || 0))) {
+        const y = Math.max(12, (l.target.y || 0) + 8);
+        const last = groups[groups.length - 1];
+        if (last && y - last.y < 22) last.links.push(l); else groups.push({ y, links: [l] });
+      }
+      for (const gr of groups) {
+        const l0 = gr.links[0];
+        let label = '← ' + (l0.srcTitle || 'link');
+        if (label.length > 26) label = label.slice(0, 25) + '…';
+        if (gr.links.length > 1) label = '← ' + gr.links.length + ' links';
+        const w = 12 + label.length * 5.1;
+        const x0 = s.p.w - w - 4, y0 = gr.y - 8;
+        const m = sv('g', { class: 'inlink' });
+        m.appendChild(sv('rect', { x: x0, y: y0, width: w, height: 16, rx: 8, fill: '#1D5A8A', opacity: 0.92 }));
+        const t = sv('text', { x: x0 + 6, y: y0 + 11.3, 'font-size': 9, fill: '#fff', 'font-weight': 600 });
+        t.textContent = label;
+        m.appendChild(t);
+        g.appendChild(m);
+        s.inPills.push({ x0, x1: x0 + w, y0, y1: y0 + 16, links: gr.links });
+      }
     }
     this.drawBoxes(s);
   }
@@ -596,14 +682,17 @@ export class Viewer {
   currentOffset() {
     const s = this.slots.get(this.currentKey());
     if (!s) return 0;
-    return Math.max(0, (this.scroller.scrollTop - s.slot.offsetTop) / this.scale);
+    return Math.max(0, (this.scroller.scrollTop - s.slot.offsetTop) / this.k(s));
   }
 
   goTo(key, y = 0, opts = {}) {
-    const s = this.slots.get(key) || this.slots.get('p1');
+    let s = this.slots.get(key) || this.slots.get('p1');
     if (!s) return;
+    // modo artigo/bordas cortadas: a parte da página que contém essa altura
+    if (s.p.parts > 1) { const parts = [...this.slots.values()].filter(x => x.p.key === key); s = parts.find(x => y >= x.p.box[1] * x.p.h - 2 && y <= (x.p.box[1] + x.p.box[3]) * x.p.h) || parts[0]; }
     if (!opts.noHist) this.hist.push({ key: this.currentKey(), y: this.currentOffset() });
-    const top = s.slot.offsetTop + y * this.scale - (opts.exact ? 0 : 40);
+    let top = s.slot.offsetTop + y * this.k(s) - (opts.exact ? 0 : 40);
+    if (s.cb) top = Math.max(top, s.wrap.offsetTop);
     this.scroller.scrollTop = Math.max(0, top);
     if (opts.flash && y) this.flashAt(s, y);
     this.app.onNav && this.app.onNav(this);
@@ -616,7 +705,7 @@ export class Viewer {
   }
 
   flashAt(s, y) {
-    const f = h('div.flash', { style: { top: (y * this.scale - 6) + 'px' } });
+    const f = h('div.flash', { style: { top: (y * this.k(s) - 6) + 'px' } });
     s.slot.appendChild(f);
     setTimeout(() => f.remove(), 1600);
   }
@@ -645,7 +734,8 @@ export class Viewer {
   slotAt(clientX, clientY) {
     for (const s of this.slots.values()) {
       const r = s.slot.getBoundingClientRect();
-      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) return { s, x: (clientX - r.left) / this.scale, y: (clientY - r.top) / this.scale };
+      const c = s.cb ? s.clip.getBoundingClientRect() : r;   // página recortada: só a parte visível conta
+      if (clientX >= c.left && clientX <= c.right && clientY >= c.top && clientY <= c.bottom) return { s, x: (clientX - r.left) / this.k(s), y: (clientY - r.top) / this.k(s) };
     }
     return null;
   }
@@ -771,11 +861,11 @@ export class Viewer {
     const r = op.s.slot.getBoundingClientRect();
     const maxX = op.s.p.w * (this.hasMargin(op.s.p.key) ? 1 + MARGIN_FRAC : 1);
     for (const ev of (evs.length ? evs : [e])) {
-      const x = Math.max(0, Math.min(maxX, (ev.clientX - r.left) / this.scale));
-      const y = Math.max(0, Math.min(op.s.p.h, (ev.clientY - r.top) / this.scale));
+      const x = Math.max(0, Math.min(maxX, (ev.clientX - r.left) / this.k(op.s)));
+      const y = Math.max(0, Math.min(op.s.p.h, (ev.clientY - r.top) / this.k(op.s)));
       const p = ev.pointerType === 'pen' ? (ev.pressure || 0.5) : 0.5;
       const last = op.a.pts[op.a.pts.length - 1];
-      if (last && Math.hypot(last[0] - x, last[1] - y) < 0.35 / this.scale * 2) continue;
+      if (last && Math.hypot(last[0] - x, last[1] - y) < 0.35 / this.k(op.s) * 2) continue;
       op.a.pts.push([+x.toFixed(2), +y.toFixed(2), +p.toFixed(2), Date.now() - op.t0]);
     }
     op.path.setAttribute('d', strokePath(op.a.pts));
@@ -783,7 +873,7 @@ export class Viewer {
   }
 
   eraseAt(hit) {
-    const R = 6 / this.scale + 3;
+    const R = 6 / this.k(hit.s) + 3;
     for (const a of this.annsOf(hit.s.p.key)) {
       if (a.kind !== 'ink' || this.op.ids.has(a.id)) continue;
       if (a.pts.some(p => Math.hypot(p[0] - hit.x, p[1] - hit.y) < R + a.width / 2)) {
@@ -811,7 +901,7 @@ export class Viewer {
       else if (op.type === 'erase') { const hit = this.slotAt(e.clientX, e.clientY); if (hit && hit.s === op.s) this.eraseAt(hit); }
       else if (op.type === 'lasso') {
         const r = op.s.slot.getBoundingClientRect();
-        op.pts.push([(e.clientX - r.left) / this.scale, (e.clientY - r.top) / this.scale]);
+        op.pts.push([(e.clientX - r.left) / this.k(op.s), (e.clientY - r.top) / this.k(op.s)]);
         op.path.setAttribute('d', 'M' + op.pts.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') + 'Z');
       } else if (op.type === 'move') {
         op.dx = (e.clientX - op.cx0) / this.scale; op.dy = (e.clientY - op.cy0) / this.scale;
@@ -825,7 +915,7 @@ export class Viewer {
       }
       else if (op.type === 'rect') {
         const r = op.s.slot.getBoundingClientRect();
-        const x = (e.clientX - r.left) / this.scale, y = (e.clientY - r.top) / this.scale;
+        const x = (e.clientX - r.left) / this.k(op.s), y = (e.clientY - r.top) / this.k(op.s);
         op.r.setAttribute('x', Math.min(x, op.x0)); op.r.setAttribute('y', Math.min(y, op.y0));
         op.r.setAttribute('width', Math.abs(x - op.x0)); op.r.setAttribute('height', Math.abs(y - op.y0));
       }
@@ -945,8 +1035,8 @@ export class Viewer {
     const maxP = Math.max(...pts.map(q => q[2] || 0), 0);
     const t0 = pts[0][3] || 0;
     const loc = pts.map(q => [
-      +Math.max(0, Math.min(maxX, (q[0] - r.left) / this.scale)).toFixed(2),
-      +Math.max(0, Math.min(s.p.h, (q[1] - r.top) / this.scale)).toFixed(2),
+      +Math.max(0, Math.min(maxX, (q[0] - r.left) / this.k(s))).toFixed(2),
+      +Math.max(0, Math.min(s.p.h, (q[1] - r.top) / this.k(s))).toFixed(2),
       +(maxP > 1 ? Math.min(1, (q[2] || 0) / maxP) * 0.8 : (q[2] || 0.5)).toFixed(2),
       Math.max(0, Math.round((q[3] || 0) - t0))]);
     if (o.erase || this.app.tool === 'eraser') {
@@ -983,11 +1073,7 @@ export class Viewer {
       if (!list.some(b => b.kind === 'ink' && b.pts.some(p => Math.hypot(p[0] - x, p[1] - y) < 6))) return { type: 'img', a, s };
     }
     for (const a of list) if (a.kind === 'note' && Math.hypot(a.x - x, a.y - y) < 12) return { type: 'note', a, s };
-    const inc = (this.app.incomingLinks && this.app.incomingLinks(this.doc.id, s.p.key)) || [];
-    if (inc.length && x > s.p.w - 26 && x < s.p.w) {
-      const y0 = Math.max(10, Math.min(...inc.map(l => l.target.y || 0)) + 8);
-      if (Math.abs(y - y0) < 12) return { type: 'incoming', links: inc, s };
-    }
+    for (const pl of (s.inPills || [])) if (x >= pl.x0 - 2 && x <= pl.x1 + 2 && y >= pl.y0 - 3 && y <= pl.y1 + 3) return { type: 'incoming', links: pl.links, s };
     for (const a of list) if (a.kind === 'link' && a.rects.some(r => inRect(x, y, r, 2))) return { type: 'link', a, s };
     for (const a of list) if (a.kind === 'hl' && (a.rects.some(r => inRect(x, y, r, 1.5)) || (a.rects[0] && Math.hypot(8 - x, a.rects[0][1] + a.rects[0][3] / 2 - y) < 8))) return { type: 'hl', a, s };
     for (const l of (s.links || [])) if (inRect(x, y, l.rect, 1)) return { type: 'pdflink', l, s };
@@ -1009,8 +1095,9 @@ export class Viewer {
     for (const s of this.slots.values()) {
       if (!s.text) continue;
       const pr = s.pg.getBoundingClientRect();
-      const mine = rects.filter(r => r.top + r.height / 2 >= pr.top && r.top + r.height / 2 <= pr.bottom && r.left < pr.right && r.right > pr.left)
-        .map(r => [(Math.max(r.left, pr.left) - pr.left) / this.scale, (r.top - pr.top) / this.scale, (Math.min(r.right, pr.right) - Math.max(r.left, pr.left)) / this.scale, r.height / this.scale]);
+      const cr = s.cb ? s.clip.getBoundingClientRect() : pr;
+      const mine = rects.filter(r => r.top + r.height / 2 >= Math.max(pr.top, cr.top) && r.top + r.height / 2 <= Math.min(pr.bottom, cr.bottom) && r.left < Math.min(pr.right, cr.right) && r.right > Math.max(pr.left, cr.left))
+        .map(r => [(Math.max(r.left, pr.left) - pr.left) / this.k(s), (r.top - pr.top) / this.k(s), (Math.min(r.right, pr.right) - Math.max(r.left, pr.left)) / this.k(s), r.height / this.k(s)]);
       if (mine.length) segs.push({ pageKey: s.p.key, rects: mergeRects(mine) });
     }
     if (!segs.length) return null;
@@ -1019,7 +1106,7 @@ export class Viewer {
   }
 }
 
-function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n : p.kind === 'nb' ? (p.tpl === 'cover' ? 'Capa' : 'Página ' + p.n) : 'Página em branco'; }
+function pageTitle(p) { return p.kind === 'pdf' ? 'p. ' + p.n + (p.parts > 1 ? ' · parte ' + (p.part + 1) + ' de ' + p.parts : '') : p.kind === 'nb' ? (p.tpl === 'cover' ? 'Capa' : 'Página ' + p.n) : 'Página em branco'; }
 
 // área com conteúdo (texto, figuras) de algumas páginas, em frações da página: [x, y, largura, altura]
 const cropCache = new Map();

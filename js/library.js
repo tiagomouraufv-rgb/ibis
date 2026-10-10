@@ -1,6 +1,6 @@
 // Biblioteca: documentos, projetos, busca geral, gravações.
 import * as S from './store.js';
-import { h, clear, btn, icon, toast, popMenu, promptBox, confirmBox, fold, fmtDate, fmtTime, debounce } from './util.js';
+import { h, clear, btn, icon, toast, popMenu, promptBox, confirmBox, fold, fmtDate, fmtTime, debounce, uid } from './util.js';
 import { openPdf, getPage, pageLabel } from './pdfdoc.js';
 import { openExportDialog, openObsidianDialog, openMetaDialog, openProjectsDialog, openBriefing, openSettings } from './dialogs.js';
 import { playAudio } from './audio.js';
@@ -102,9 +102,11 @@ export class Library {
       return;
     }
     let docs = await S.allDocs();
+    let proj = null;
     if (this.view.startsWith('projeto:')) {
       const pid = this.view.slice(8);
-      const proj = (await S.projects()).find(p => p.id === pid);
+      proj = (await S.projects()).find(p => p.id === pid);
+      if (!proj) { this.view = 'todos'; return this.render(); }
       docs = docs.filter(d => (d.projects || []).includes(pid));
       body.appendChild(h('div.btnrow',
         h('button.sbtn', { type: 'button', onclick: () => this.projectContext(proj) }, icon('ai', 18), proj.aiContext ? 'Contexto da IA ✓' : 'Contexto da IA'),
@@ -133,28 +135,174 @@ export class Library {
         return;
       }
     }
+    const all = await S.allAnnots();
+    const annCount = new Map(), annEdit = new Map();
+    for (const a of all) { annCount.set(a.docId, (annCount.get(a.docId) || 0) + 1); annEdit.set(a.docId, Math.max(annEdit.get(a.docId) || 0, a.updated || a.created || 0)); }
+    this.annCount = annCount; this.annEdit = annEdit;
+    if (proj) return this.renderProject(body, proj, docs);
     if (!docs.length) {
-      body.appendChild(h('div.empty', h('p', this.view === 'todos' ? 'Nenhum PDF ainda.' : 'Nenhum PDF neste projeto.'),
-        h('p.muted', 'Toque em “Abrir PDF”. O seletor do Android mostra o tablet, o Google Drive e o OneDrive.')));
+      body.appendChild(h('div.empty', h('p', 'Nenhum documento ainda.'),
+        h('p.muted', 'Toque em “Abrir PDF”, “Novo texto” ou “Novo caderno”. O seletor do Android mostra o tablet, o Google Drive e o OneDrive.')));
       return;
     }
-    const grid = h('div.grid');
-    body.appendChild(grid);
-    const all = await S.allAnnots();
-    for (const d of docs) {
-      const n = all.filter(a => a.docId === d.id).length;
-      const thumb = h('div.cover');
-      const card = h('div.card',
-        h('button.cardopen', { type: 'button', onclick: () => this.app.openDoc(d.id), 'aria-label': 'Abrir ' + S.docTitle(d) }, thumb),
-        h('div.cardinfo',
-          h('div.ctitle', S.docTitle(d)),
-          h('div.cmeta', d.kind === 'text' ? 'Texto · ' + plainText(d.md || '').split(/\s+/).filter(Boolean).length + ' palavras' : d.kind === 'notebook' ? 'Caderno · ' + (d.pages || []).length + ' página(s)' : ([d.meta && d.meta.year, d.meta && d.meta.journal].filter(Boolean).join(' · ') || (d.fileName || ''))),
-          h('div.cmeta', (d.opened ? 'Aberto em ' + fmtDate(d.opened) : 'Novo') + (n ? ' · ' + n + ' anotações' : ''))),
-        h('button.ibtn.cardmenu', { type: 'button', 'aria-label': 'Opções', onclick: e => this.docMenu(d, e.clientX, e.clientY) }, icon('more', 20)));
-      card.addEventListener('contextmenu', e => { e.preventDefault(); this.docMenu(d, e.clientX + 220, e.clientY); });
-      grid.appendChild(card);
-      this.thumb(d, thumb);
+    // continuar lendo: os últimos abertos
+    const recent = docs.filter(d => d.opened).sort((a, b) => b.opened - a.opened).slice(0, 4);
+    if (recent.length) {
+      body.appendChild(h('div.flabel', 'CONTINUAR'));
+      body.appendChild(h('div.resume', recent.map(d => h('button.resumecard', { type: 'button', onclick: () => this.app.openDoc(d.id) },
+        icon(kindIcon(d), 18), h('span.clamp', S.docTitle(d)), h('span.muted', resumeWhere(d))))));
     }
+    // biblioteca principal: três colunas (PDF, caderno, texto), em ordem alfabética
+    const cols = h('div.libcols');
+    for (const [kind, label, ic] of [['pdf', 'PDFs', 'doc'], ['notebook', 'Cadernos', 'notebook'], ['text', 'Textos', 'text']]) {
+      const list = sortDocs(docs.filter(d => docKind(d) === kind), 'alfa');
+      const col = h('section.libcol', h('h2.libcolh', icon(ic, 18), h('span', label), h('span.muted', String(list.length))));
+      if (!list.length) col.appendChild(h('p.muted.pad', kind === 'pdf' ? 'Nenhum PDF.' : kind === 'notebook' ? 'Nenhum caderno.' : 'Nenhum texto.'));
+      for (const d of list) col.appendChild(this.row(d));
+      cols.appendChild(col);
+    }
+    body.appendChild(cols);
+  }
+
+  // linha compacta (biblioteca principal)
+  row(d) {
+    const thumb = h('div.rowthumb');
+    const n = (this.annCount && this.annCount.get(d.id)) || 0;
+    const r = h('div.docrow', { 'data-id': d.id },
+      h('button.docrowopen', { type: 'button', onclick: () => this.app.openDoc(d.id), 'aria-label': 'Abrir ' + S.docTitle(d) }, thumb,
+        h('span.docrowtxt', h('span.ctitle', S.docTitle(d)), h('span.cmeta', metaLine(d) + (n ? ' · ' + n + ' anot.' : '')))),
+      h('button.ibtn.small', { type: 'button', 'aria-label': 'Opções', onclick: e => this.docMenu(d, e.clientX, e.clientY) }, icon('more', 18)));
+    r.addEventListener('contextmenu', e => { e.preventDefault(); this.docMenu(d, e.clientX + 220, e.clientY); });
+    this.dragCard(r, d);
+    this.thumb(d, thumb, true);
+    return r;
+  }
+
+  // cartão grande (projetos)
+  card(d) {
+    const n = (this.annCount && this.annCount.get(d.id)) || 0;
+    const thumb = h('div.cover');
+    const card = h('div.card', { 'data-id': d.id },
+      h('button.cardopen', { type: 'button', onclick: () => this.app.openDoc(d.id), 'aria-label': 'Abrir ' + S.docTitle(d) }, thumb),
+      h('div.cardinfo',
+        h('div.ctitle', S.docTitle(d)),
+        h('div.cmeta', metaLine(d)),
+        h('div.cmeta', (d.opened ? 'Aberto em ' + fmtDate(d.opened) : 'Novo') + (n ? ' · ' + n + ' anotações' : ''))),
+      h('button.ibtn.cardmenu', { type: 'button', 'aria-label': 'Opções', onclick: e => this.docMenu(d, e.clientX, e.clientY) }, icon('more', 20)));
+    card.addEventListener('contextmenu', e => { e.preventDefault(); this.docMenu(d, e.clientX + 220, e.clientY); });
+    this.dragCard(card, d);
+    this.thumb(d, thumb);
+    return card;
+  }
+
+  // arrastar um documento (mouse) para uma pasta do projeto
+  dragCard(el, d) {
+    if (!matchMedia('(pointer: fine)').matches) return;
+    el.setAttribute('draggable', 'true');
+    el.addEventListener('dragstart', e => { e.dataTransfer.setData('application/x-leitor-doc', d.id); e.dataTransfer.effectAllowed = 'move'; });
+  }
+
+  // ---------- projeto: ordem, pastas e subpastas ----------
+  async renderProject(body, proj, docs) {
+    const pid = proj.id;
+    const folders = proj.folders || [];
+    if (this.folderOf !== pid) { this.folderOf = pid; this.folder = null; }
+    if (this.folder && !folders.some(f => f.id === this.folder)) this.folder = null;
+    const st = await S.settings();
+    const sort = st.projSort || 'alfa';
+    const inFolder = d => { const f = (d.pfolders || {})[pid]; return f && folders.some(x => x.id === f) ? f : null; };
+    const here = docs.filter(d => inFolder(d) === this.folder);
+    const subs = folders.filter(f => (f.parent || null) === this.folder).sort((a, b) => cmp(a.name, b.name));
+    const countIn = fid => { const ids = new Set([fid]); let grew = true; while (grew) { grew = false; for (const f of folders) if (f.parent && ids.has(f.parent) && !ids.has(f.id)) { ids.add(f.id); grew = true; } } return docs.filter(d => ids.has(inFolder(d))).length; };
+    // barra: caminho, ordem, nova pasta
+    const crumbs = [h('button.crumb', { type: 'button', onclick: () => { this.folder = null; this.renderBody(body); } }, icon('folder', 16), proj.name)];
+    const chain = []; let f = folders.find(x => x.id === this.folder);
+    while (f) { chain.unshift(f); f = folders.find(x => x.id === f.parent); }
+    for (const c of chain) crumbs.push(h('span.muted', '›'), h('button.crumb', { type: 'button', onclick: () => { this.folder = c.id; this.renderBody(body); } }, c.name));
+    const sortBtn = (id, l) => h('button', { type: 'button', 'aria-pressed': String(sort === id), onclick: async () => { await S.setSettings({ projSort: id }); this.renderBody(body); } }, l);
+    body.appendChild(h('div.projbar',
+      h('nav.crumbs', { 'aria-label': 'Pasta atual' }, crumbs),
+      h('div.grow'),
+      h('div.seg', { role: 'group', 'aria-label': 'Ordem' }, h('span.muted', 'Ordem:'), sortBtn('alfa', 'A–Z'), sortBtn('edit', 'Última edição'), sortBtn('tipo', 'Tipo')),
+      h('button.sbtn', { type: 'button', onclick: () => this.newFolder(proj, this.folder) }, icon('plus', 16), 'Nova pasta')));
+    if (subs.length) {
+      const fl = h('div.folders');
+      for (const sf of subs) {
+        const tile = h('div.foldertile', { 'data-folder': sf.id },
+          h('button.folderopen', { type: 'button', onclick: () => { this.folder = sf.id; this.renderBody(body); } }, icon('folder', 22), h('span.clamp', sf.name), h('span.muted', String(countIn(sf.id)))),
+          h('button.ibtn.small', { type: 'button', 'aria-label': 'Opções da pasta', onclick: e => this.folderMenu(proj, sf, e.clientX, e.clientY) }, icon('more', 18)));
+        tile.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('application/x-leitor-doc')) { e.preventDefault(); tile.classList.add('dropok'); } });
+        tile.addEventListener('dragleave', () => tile.classList.remove('dropok'));
+        tile.addEventListener('drop', async e => { const id = e.dataTransfer.getData('application/x-leitor-doc'); if (!id) return; e.preventDefault(); await this.moveDoc(id, pid, sf.id); });
+        fl.appendChild(tile);
+      }
+      body.appendChild(fl);
+    }
+    if (!here.length && !subs.length) {
+      body.appendChild(h('div.empty', h('p', this.folder ? 'Pasta vazia.' : 'Nenhum documento neste projeto.'),
+        h('p.muted', this.folder ? 'Use ⋯ > “Mover para pasta…” num documento do projeto (ou arraste com o mouse até a pasta).' : 'Use “Abrir PDF”, “Novo texto”, “Novo caderno” ou “Adicionar da biblioteca”.')));
+      return;
+    }
+    const groups = sort === 'tipo'
+      ? [['text', 'Textos'], ['notebook', 'Cadernos'], ['pdf', 'PDFs']].map(([k, l]) => [l, sortDocs(here.filter(d => docKind(d) === k), 'alfa')]).filter(g => g[1].length)
+      : [[null, sortDocs(here, sort, this.annEdit)]];
+    for (const [label, list] of groups) {
+      if (label) body.appendChild(h('h2.sech', label + ' (' + list.length + ')'));
+      const grid = h('div.grid');
+      for (const d of list) grid.appendChild(this.card(d));
+      body.appendChild(grid);
+    }
+  }
+
+  async newFolder(proj, parent) {
+    const name = await promptBox('Nova pasta', 'Nome da pasta', '', 'Criar');
+    if (!name || !name.trim()) return;
+    proj.folders = (proj.folders || []).concat([{ id: uid('pf'), name: name.trim(), parent: parent || null }]);
+    await S.saveProject(proj);
+  }
+
+  folderMenu(proj, f, x, y) {
+    popMenu(x - 220, y, [
+      { icon: 'note', label: 'Renomear', onclick: async () => { const n = await promptBox('Renomear pasta', 'Nome', f.name, 'Salvar'); if (n && n.trim()) { f.name = n.trim(); proj.folders = proj.folders.map(x => x.id === f.id ? f : x); await S.saveProject(proj); } } },
+      { icon: 'folder', label: 'Mover para…', onclick: () => this.pickFolder(proj, 'Mover a pasta “' + f.name + '” para', f.id, async dest => { f.parent = dest; proj.folders = proj.folders.map(x => x.id === f.id ? f : x); await S.saveProject(proj); }) },
+      '-',
+      { icon: 'trash', label: 'Apagar pasta (o conteúdo sobe um nível)', danger: true, onclick: async () => {
+        if (!(await confirmBox('Apagar pasta', 'Apagar a pasta “' + f.name + '”? Os documentos e subpastas dela passam para a pasta de cima. Nada é apagado da biblioteca.', 'Apagar pasta', true))) return;
+        const up = f.parent || null;
+        proj.folders = proj.folders.filter(x => x.id !== f.id).map(x => x.parent === f.id ? Object.assign({}, x, { parent: up }) : x);
+        await S.saveProject(proj);
+        for (const d of await S.allDocs()) if ((d.pfolders || {})[proj.id] === f.id) await this.moveDoc(d.id, proj.id, up, true);
+        this.renderMain();
+      } },
+    ]);
+  }
+
+  // escolher uma pasta do projeto (exclui a própria pasta e as filhas dela, ao mover uma pasta)
+  async pickFolder(proj, title, exclude, onPick) {
+    const { modal } = await import('./util.js');
+    const folders = proj.folders || [];
+    const banned = new Set();
+    if (exclude) { banned.add(exclude); let grew = true; while (grew) { grew = false; for (const f of folders) if (f.parent && banned.has(f.parent) && !banned.has(f.id)) { banned.add(f.id); grew = true; } } }
+    const rows = [h('button.pickrow', { type: 'button', onclick: () => { m.close(); onPick(null); } }, icon('folder', 16), h('b', proj.name + ' (raiz)'))];
+    const walk = (parent, depth) => {
+      for (const f of folders.filter(x => (x.parent || null) === parent).sort((a, b) => cmp(a.name, b.name))) {
+        if (banned.has(f.id)) continue;
+        rows.push(h('button.pickrow', { type: 'button', style: { paddingLeft: (12 + depth * 18) + 'px' }, onclick: () => { m.close(); onPick(f.id); } }, icon('folder', 16), h('span', f.name)));
+        walk(f.id, depth + 1);
+      }
+    };
+    walk(null, 1);
+    const m = modal(title, h('div.picklist', rows));
+  }
+
+  async moveDoc(docId, pid, folderId, quiet) {
+    const d = await S.getDoc(docId);
+    if (!d) return;
+    d.pfolders = Object.assign({}, d.pfolders || {});
+    if (folderId) d.pfolders[pid] = folderId; else delete d.pfolders[pid];
+    if (!(d.projects || []).includes(pid)) d.projects = (d.projects || []).concat([pid]);
+    await S.saveDoc(d);
+    if (!quiet) { toast('Movido.'); this.renderMain(); }
   }
 
   async newNotebook() {
@@ -179,7 +327,7 @@ export class Library {
       { label: 'Criar', primary: true, onclick: async c => {
         c();
         const doc = await NB.createNotebook(name.value.trim() || 'Caderno', tpl, color);
-        if (this.view.startsWith('projeto:')) { doc.projects = [this.view.slice(8)]; await S.saveDoc(doc); }
+        this.placeNew(doc); await S.saveDoc(doc);
         this.app.openDoc(doc.id);
       } },
     ]);
@@ -211,11 +359,20 @@ export class Library {
     const name = await promptBox('Novo texto', 'Nome', 'Texto ' + new Date().toLocaleDateString('pt-BR'), 'Criar');
     if (name === null) return;
     const doc = await TX.createTextDoc(name.trim() || 'Texto');
-    if (this.view.startsWith('projeto:')) { doc.projects = [this.view.slice(8)]; await S.saveDoc(doc); }
+    this.placeNew(doc); await S.saveDoc(doc);
     this.app.openDoc(doc.id);
   }
 
-  async thumb(d, el) {
+  // documento novo criado dentro de um projeto (e da pasta aberta)
+  placeNew(doc) {
+    if (!this.view.startsWith('projeto:')) return;
+    const pid = this.view.slice(8);
+    doc.projects = [pid];
+    if (this.folder && this.folderOf === pid) doc.pfolders = { [pid]: this.folder };
+  }
+
+  async thumb(d, el, small) {
+    if (small && d.kind === 'text') { el.classList.add('txcover'); el.appendChild(icon('text', 22)); return; }
     if (d.kind === 'text') {
       const md = d.md || '';
       const first = (md.match(/^#{1,3}\s+(.+)$/m) || [])[1] || S.docTitle(d);
@@ -226,6 +383,7 @@ export class Library {
     if (d.kind === 'notebook') {
       try { el.appendChild(h('img', { src: await NB.coverDataUrl(d), alt: '' })); } catch (e) { el.appendChild(icon('notebook', 40)); }
       el.classList.add('nbcover');
+      if (small) el.style.background = d.coverColor || '#fff';
       return;
     }
     if (d.thumb) { el.appendChild(h('img', { src: d.thumb, alt: '' })); return; }
@@ -247,6 +405,7 @@ export class Library {
       { icon: 'pages', label: 'Abrir em nova janela', onclick: () => this.app.newWindow(d.id) },
       d.kind ? null : { icon: 'tag', label: 'Dados do artigo (DOI, ABNT, BibTeX)', onclick: () => openMetaDialog(d) },
       { icon: 'folder', label: 'Projetos…', onclick: () => openProjectsDialog(d) },
+      this.view.startsWith('projeto:') ? { icon: 'folder', label: 'Mover para pasta…', onclick: async () => { const pid = this.view.slice(8); const proj = (await S.projects()).find(p => p.id === pid); if (proj) this.pickFolder(proj, 'Mover “' + S.docTitle(d) + '” para', null, f => this.moveDoc(d.id, pid, f)); } } : null,
       d.kind === 'text' ? { icon: 'upload', label: 'Exportar texto (Markdown / Obsidian / PDF)', onclick: () => TX.openTextExport(d) } : d.kind === 'notebook' ? { icon: 'upload', label: 'Exportar caderno (PDF / Obsidian)', onclick: () => openNotebookExport(d) } : { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },
       d.kind ? null : { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
       d.kind === 'notebook' ? { icon: 'notebook', label: 'Capa…', onclick: () => this.app.reader.coverMenu(d, x - 220, y, () => this.renderMain()) } : null,
@@ -350,4 +509,34 @@ export class Library {
     body.appendChild(sec('Digest', its.length));
     for (const it of its.slice(0, 100)) body.appendChild(h('button.srow.big', { type: 'button', onclick: () => this.app.showDigest(it.id) }, icon('digest', 18), h('div.grow', h('div.clamp', it.quote), h('div.muted', it.src.name + ' · ' + dgPages(it)))));
   }
+}
+
+// ---------- ordem e rótulos ----------
+const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+function cmp(a, b) { return collator.compare(a || '', b || ''); }
+export function docKind(d) { return d.kind === 'notebook' ? 'notebook' : d.kind === 'text' ? 'text' : 'pdf'; }
+function kindIcon(d) { return docKind(d) === 'notebook' ? 'notebook' : docKind(d) === 'text' ? 'text' : 'doc'; }
+// campos que só registram leitura (não contam como edição)
+const VIEW_FIELDS = new Set(['opened', 'lastKey', 'lastY', 'thumb', 'textPos', 'updated', 'fts']);
+export function lastEdit(d, annEdit) {
+  let t = d.added || 0;
+  for (const [k, v] of Object.entries(d.fts || {})) if (!VIEW_FIELDS.has(k) && v > t) t = v;
+  return Math.max(t, (annEdit && annEdit.get(d.id)) || 0);
+}
+export function sortDocs(list, how, annEdit) {
+  const out = list.slice();
+  if (how === 'edit') out.sort((a, b) => lastEdit(b, annEdit) - lastEdit(a, annEdit));
+  else out.sort((a, b) => cmp(S.docTitle(a), S.docTitle(b)));
+  return out;
+}
+function metaLine(d) {
+  if (d.kind === 'text') return 'Texto · ' + plainText(d.md || '').split(/\s+/).filter(Boolean).length + ' palavras';
+  if (d.kind === 'notebook') return 'Caderno · ' + (d.pages || []).length + ' página(s)';
+  return [d.meta && d.meta.year, d.meta && d.meta.journal].filter(Boolean).join(' · ') || (d.fileName || 'PDF');
+}
+function resumeWhere(d) {
+  if (d.kind === 'text') return 'texto';
+  const k = d.lastKey || '';
+  if (d.kind === 'notebook') return 'caderno';
+  return /^p\d+$/.test(k) ? 'p. ' + k.slice(1) : 'PDF';
 }

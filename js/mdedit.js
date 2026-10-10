@@ -1,5 +1,6 @@
 // Base dos editores de Markdown (caixa de texto do caderno e documento de texto):
 // formatação, equações, numeração, referências, tabelas e símbolos de matemática.
+import { calloutMenu, calloutMd } from './callouts.js';
 import { h, toast, popMenu } from './util.js';
 import { listEquations } from './md.js';
 
@@ -55,6 +56,7 @@ export class MdEditBase {
       b('• Lista', 'Lista', () => this.linePrefix('- ')),
       b('☐ Tarefa', 'Lista de tarefas', () => this.linePrefix('- [ ] ')),
       b('❝', 'Citação', () => this.linePrefix('> ')),
+      b('▣ Caixa', 'Caixa de nota (callout do Obsidian): Nota, Dica, Atenção, Pergunta, Exemplo…', e => this.calloutPick(e)),
       b('</>', 'Código', () => this.wrapSel('`', '`')),
       b('▦', 'Tabela: escolha linhas e colunas', e => this.tableMenu(e)),
       h('span.fsep'),
@@ -63,6 +65,23 @@ export class MdEditBase {
       b('(n)', 'Numerar equação (\\eqn): numera a equação onde está o cursor, ou cria uma nova numerada', () => this.numberEq()),
       b('ref', 'Citar equação numerada (\\eqref): escolha a equação; o nome é criado sozinho', e => this.refMenu(e)),
     ];
+  }
+
+  // transforma as linhas selecionadas (ou a linha do cursor) numa caixa de nota
+  calloutPick(e) {
+    const ta = this.ta; if (!ta) return;
+    const s0 = ta.selectionStart, e0 = ta.selectionEnd;
+    calloutMenu(Math.max(8, e.clientX - 100), e.clientY + 12, t => {
+      const v = ta.value;
+      const ls = v.lastIndexOf('\n', s0 - 1) + 1;
+      let le = v.indexOf('\n', e0); if (le < 0) le = v.length;
+      const chunk = v.slice(ls, le);
+      let out;
+      if (/^>\s*\[!/.test(chunk)) out = chunk.replace(/^>\s*\[![^\]]+\]/, '> [!' + t.id + ']');   // já é caixa: troca o tipo
+      else out = calloutMd(t, chunk.replace(/^>\s?/gm, ''));
+      ta.setRangeText(out, ls, le, 'end');
+      ta.dispatchEvent(new Event('input')); ta.focus();
+    });
   }
 
   wrapSel(a, z) {

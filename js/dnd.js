@@ -20,30 +20,38 @@ export function payloadFromTransfer(o) {
 }
 
 // começa a arrastar a partir de um toque/caneta/mouse em "el"
+// No app Android o arrastar é sempre o do sistema (passa entre janelas do DeX); o arrastar HTML do
+// próprio WebView fica desligado, porque ele não leva os dados do app para a outra janela.
 export function makeDraggable(el, getPayload) {
   el.classList.add('dragsrc');
-  el.setAttribute('draggable', 'true');
-  let ready = null;
-  // mouse no navegador: arrastar do próprio navegador (funciona entre janelas)
-  el.addEventListener('dragstart', e => {
-    if (!ready) { e.preventDefault(); return; }
-    e.dataTransfer.setData(MIME, JSON.stringify(ready));
-    if (ready.text) e.dataTransfer.setData('text/plain', ready.text);
-    e.dataTransfer.effectAllowed = 'copy';
-  });
-  el.addEventListener('pointerenter', async () => { if (!ready) ready = await payloadForTransfer(await getPayload()); });
+  let ready = null, preparing = null;
+  const prepare = () => { if (!preparing) preparing = (async () => { ready = await payloadForTransfer(await getPayload()); return ready; })(); return preparing; };
+  if (!N) {
+    el.setAttribute('draggable', 'true');
+    // mouse no navegador: arrastar do próprio navegador (funciona entre janelas)
+    el.addEventListener('dragstart', e => {
+      if (!ready) { e.preventDefault(); return; }
+      e.dataTransfer.setData(MIME, JSON.stringify(ready));
+      if (ready.text) e.dataTransfer.setData('text/plain', ready.text);
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+  } else {
+    el.setAttribute('draggable', 'false');
+    el.addEventListener('dragstart', e => e.preventDefault());
+  }
+  // mouse (computador, DeX): prepara os dados ao passar por cima, para o arrastar começar na hora
+  el.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') prepare(); });
   el.addEventListener('pointerdown', async e => {
-    if (e.pointerType === 'mouse' && !N) { if (!ready) ready = await payloadForTransfer(await getPayload()); return; }
+    if (e.pointerType === 'mouse' && !N) { prepare(); return; }
     e.preventDefault(); e.stopPropagation();
-    const p = await getPayload();
     if (N && N.startDrag) {
-      const t = await payloadForTransfer(p);
-      const b64 = t.b64 || ''; delete t.b64;
+      const t = ready || await prepare();
+      const o = Object.assign({}, t); const b64 = o.b64 || ''; delete o.b64;
       let ok = false;
-      try { ok = N.startDrag(JSON.stringify(t), b64); } catch (er) { ok = false; }
+      try { ok = N.startDrag(JSON.stringify(o), b64); } catch (er) { ok = false; }
       if (ok) return;
     }
-    customDrag(e, p);
+    customDrag(e, await getPayload());
   });
 }
 
@@ -72,14 +80,19 @@ function customDrag(e0, p) {
 export function bindDrop() {
   document.addEventListener('dragover', e => {
     const t = [...(e.dataTransfer ? e.dataTransfer.types : [])];
-    if (t.includes(MIME) || t.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+    const editable = e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]');
+    if (t.includes(MIME) || t.includes('Files') || (t.includes('text/plain') && !editable)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
   });
   document.addEventListener('drop', e => {
     const dt = e.dataTransfer; if (!dt) return;
     const raw = dt.getData(MIME);
     if (raw) { e.preventDefault(); window.leitorApp.dropAt(e.clientX, e.clientY, payloadFromTransfer(JSON.parse(raw))); return; }
     const f = [...(dt.files || [])].find(x => /^image\//.test(x.type));
-    if (f) { e.preventDefault(); window.leitorApp.dropAt(e.clientX, e.clientY, { kind: 'image', blob: f, title: f.name }); }
+    if (f) { e.preventDefault(); window.leitorApp.dropAt(e.clientX, e.clientY, { kind: 'image', blob: f, title: f.name }); return; }
+    // texto comum (de outra janela ou de outro app), fora de um campo de digitação: vira citação
+    const t = dt.getData('text/plain');
+    const editable = e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]');
+    if (t && t.trim() && !editable) { e.preventDefault(); window.leitorApp.dropAt(e.clientX, e.clientY, { kind: 'text', text: t.trim() }); }
   });
   // soltar vindo do sistema Android (outra janela do DeX ou outro app)
   window.__nativeDrop = (x, y, json, b64, mime) => {

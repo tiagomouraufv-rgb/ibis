@@ -6,7 +6,7 @@ import { Library } from './library.js';
 import { Reader } from './reader.js';
 import { DigestScreen } from './digestui.js';
 import { importPdfBytes } from './export.js';
-import { openPdf, pageText } from './pdfdoc.js';
+import { openPdf, pageText, pageLabel } from './pdfdoc.js';
 import { openSettings } from './dialogs.js';
 import { vaultZip } from './obsidian.js';
 import { downloadBlob } from './util.js';
@@ -14,11 +14,12 @@ import { isAndroidApp, b64ToBytes } from './platform.js';
 import { startAutoSync } from './sync.js';
 import { TextScreen } from './textdoc.js';
 import { watchForm, form } from './form.js';
+import { headings } from './md.js';
 import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '0.7.0';
+const VERSION = '0.8.0';
 
 class App {
   constructor() {
@@ -44,7 +45,10 @@ class App {
     this.applyTheme(st);
     S.on('settings', s => this.applyTheme(s));
     await this.refreshLinkIndex();
-    S.on('annots', debounceLinks(() => this.refreshLinkIndex()));
+    const relink = debounceLinks(() => this.refreshLinkIndex());
+    S.on('annots', relink);
+    const mdSeen = new Map();
+    S.on('docs', d => { if (!d) return relink(); if (d.kind !== 'text' || mdSeen.get(d.id) === d.md) return; mdSeen.set(d.id, d.md); relink(); });
     persistStorage();
     // abrir PDF compartilhado/aberto com o app (quando instalado)
     if ('launchQueue' in window) {
@@ -88,7 +92,7 @@ class App {
 
   // botão voltar do Android: fecha janelas, painéis e volta para a biblioteca. Retorna true se tratou.
   androidBack() {
-    const pop = document.querySelector('.popmenu, .refpop, .lookpop, .recentbar, .tablepick');
+    const pop = document.querySelector('.popmenu, .refpop, .lookpop, .recentbar, .tablepick, .pagejump');
     if (pop) { pop.remove(); return true; }
     if (this.split) {
       const mb0 = [...document.querySelectorAll('.modal-back')].pop();
@@ -273,7 +277,7 @@ class App {
       this.slots.forEach(sl => [...sl.children].forEach(c => this.leaving(c)));
       this.split = false; this.slots.forEach(sl => sl.replaceChildren()); this.splitEl.remove(); this.side = 0;
     }
-    document.querySelectorAll('.lookpop, .refpop, .popmenu, .recentbar, .tablepick').forEach(e => e.remove());
+    document.querySelectorAll('.lookpop, .refpop, .popmenu, .recentbar, .tablepick, .pagejump').forEach(e => e.remove());
     if (this.textScreen && this.textScreen.cur && el !== this.textScreen.root) this.textScreen.commit();
     if (this.textScreen && el !== this.textScreen.root) this.textScreen.hideSel();
     [...this.root.children].forEach(c => { if (c !== el) c.remove(); });
@@ -355,27 +359,47 @@ class App {
       await S.saveTexts(doc.id, pages);
     } catch (e) { console.warn('indexar', e); }
   }
+  // e-ink (Boox): começa depois e vai mais devagar, para não pesar enquanto você lê
   async indexAll() {
     if (this.indexing) return;
     this.indexing = true;
-    try { for (const d of await S.allDocs()) await this.indexDoc(d); } finally { this.indexing = false; }
+    try {
+      if (isEink()) await new Promise(r => setTimeout(r, 45000));
+      for (const d of await S.allDocs()) { await this.indexDoc(d); if (isEink()) await new Promise(r => setTimeout(r, 1500)); }
+    } finally { this.indexing = false; }
   }
 
+  // índice de todas as ligações entre documentos (para mostrar os links de volta em qualquer lugar):
+  // links desenhados nos PDFs/cadernos, links escritos nos textos e nas caixas de texto dos cadernos.
   async refreshLinkIndex() {
-    const out = (await S.allAnnots()).filter(a => a.kind === 'link');
-    // links escritos nos textos (leitor://documento/página) também contam como "links de volta"
+    const anns = await S.allAnnots();
+    const out = anns.filter(a => a.kind === 'link' && a.target);
+    const LINK = /\[([^\]]*)\]\(leitor:\/\/([\w-]+)\/([\w-]*)(?:\?y=(\d+))?\)/g;
+    const push = (srcDoc, key, y, m, n, extra) => out.push(Object.assign({ kind: 'link', id: 'mdl-' + srcDoc + '-' + n, docId: srcDoc, pageKey: key, rects: [[0, y || 0, 0, 0]], text: m[1], target: { type: 'page', docId: m[2], pageKey: m[3] || 'top', y: +(m[4] || 0) }, fromMd: true }, extra || {}));
     for (const d of (await S.allDocs()).filter(x => x.kind === 'text')) {
-      const md = d.md || ''; let key = 'top'; let k = 0;
-      const re = /^#{1,6}\s+(.+)$|\[([^\]]*)\]\(leitor:\/\/([\w-]+)\/([\w-]*)(?:\?y=(\d+))?\)/gm;
-      let m;
-      const used = {};
-      while ((m = re.exec(md))) {
-        if (m[1] !== undefined) { const t = m[1].replace(/[*_`=$]/g, '').trim(); let id = 'h-' + t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); if (used[id]) id += '-' + (++used[id]); else used[id] = 1; key = id; continue; }
-        out.push({ kind: 'link', id: 'tx-' + d.id + '-' + (k++), docId: d.id, pageKey: key, rects: [[0, 0, 0, 0]], text: m[2], target: { type: 'page', docId: m[3], pageKey: m[4] || 'top', y: +(m[5] || 0) } });
+      const hs = headings(d.md || ''); let hi = 0, key = 'top', fence = false, k = 0;
+      for (const line of String(d.md || '').split('\n')) {
+        if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+        if (fence) continue;
+        if (/^#{1,6}\s+/.test(line) && hs[hi]) { key = hs[hi++].id; }
+        let m; LINK.lastIndex = 0;
+        while ((m = LINK.exec(line))) push(d.id, key, 0, m, k++);
       }
     }
+    for (const a of anns) if (a.kind === 'tbox' && a.md && a.md.includes('leitor://')) {
+      let m, k = 0; LINK.lastIndex = 0;
+      while ((m = LINK.exec(a.md))) push(a.docId, a.pageKey, a.y, m, a.id + '-' + (k++));
+    }
+    const docs = new Map((await S.allDocs()).map(d => [d.id, d]));
+    for (const l of out) { const sd = docs.get(l.docId); l.srcTitle = sd ? S.docTitle(sd) : '?'; l.srcLabel = sd ? pageLabel(l.pageKey, sd) : ''; }
+    const sig = out.map(a => a.id + '>' + a.target.docId + '/' + a.target.pageKey + '/' + a.srcTitle).sort().join('|');
     this.linkIndex = out;
+    if (sig !== this.linkSig) { this.linkSig = sig; S.emit('links', out); }
   }
+
+  // links que chegam a um documento (todas as páginas)
+  linksTo(docId) { return (this.linkIndex || []).filter(a => a.target && a.target.type === 'page' && a.target.docId === docId); }
+  linksFrom(docId) { return (this.linkIndex || []).filter(a => a.docId === docId); }
 
   async exportObsidianAll() {
     toast('Gerando o pacote…');
