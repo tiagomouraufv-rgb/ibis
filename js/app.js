@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 
 class App {
   constructor() {
@@ -73,6 +73,13 @@ class App {
     // ficou e-ink (ou mudou de forma): sem tela dividida no e-ink
     S.on('form', f => { syncPageKeys(); if (f.eink && this.split) this.exitSplit(this.side); });
     document.addEventListener('keydown', e => this.onPageKey(e));
+    // Alt+N: índice de refração (refractiveindex.info) do texto selecionado, ou a busca vazia
+    document.addEventListener('keydown', async e => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyN') return;
+      e.preventDefault();
+      const sel = String(window.getSelection && window.getSelection() || '').trim();
+      (await import('./nkdb.js')).nkPop(sel.length < 60 ? sel : '');
+    });
     const qd = new URLSearchParams(location.search).get('doc');
     if (qd) this.openDoc(qd);
     if (isAndroidApp) {

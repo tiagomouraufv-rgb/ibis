@@ -147,7 +147,8 @@ export class Viewer {
     for (const p of pages) {
       const boxes = p.kind === 'pdf' ? this.colLayout.get(p.n) : null;
       if (!boxes) { out.push(Object.assign({}, p, { box: p.kind === 'pdf' && this.cropBox ? this.cropBox : null })); continue; }
-      boxes.forEach((b, i) => out.push(Object.assign({}, p, { sid: i ? p.key + '#' + i : p.key, box: b.slice(0, 4), part: i, parts: boxes.length, head: b[4] === 1 })));
+      const hasHead = boxes.some(b => b[4] === 1), ncol = boxes.length - (hasHead ? 1 : 0);
+      boxes.forEach((b, i) => out.push(Object.assign({}, p, { sid: i ? p.key + '#' + i : p.key, box: b.slice(0, 4), part: i, parts: boxes.length, head: b[4] === 1, ncol, ci: i - (hasHead ? 1 : 0) })));
     }
     // a faixa larga do alto (título, resumo) é reduzida para caber na largura de uma coluna
     const colW = Math.max(...out.filter(p => p.box && !p.head).map(p => p.w * p.box[2]), 1);
@@ -189,7 +190,7 @@ export class Viewer {
 
   fitScale() {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
-    const maxW = Math.max(...this.pages.map(p => p.w * (p.fit || 1) * (p.box ? p.box[2] : this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1)), 1) * (anyMargin && !this.colMode ? 1 + MARGIN_FRAC : 1);
+    const maxW = Math.max(...this.pages.map(p => (p.w * (p.box ? p.box[2] : this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1) + this.amOf(p).w) * (p.fit || 1)), 1) * (anyMargin && !this.colMode ? 1 + MARGIN_FRAC : 1);
     const avail = Math.max(200, this.scroller.clientWidth - 28);
     // e-ink com "página inteira": a página cabe na altura da tela (sem rolar dentro dela)
     if (this.paged && (this.app.settings || {}).pageFit && !this.columns) {
@@ -241,6 +242,27 @@ export class Viewer {
 
   hasMargin(key) { return !!(this.doc.margins && this.doc.margins[key]); }
 
+  // modo artigo com a margem aberta: cada coluna ganha a sua faixa da margem da página, mostrada ao lado
+  // dela (a margem da página inteira é dividida entre as colunas; o título usa a margem toda).
+  // Retorna { x0, w } em unidades da página (w = 0: sem margem nesta parte).
+  amOf(p) {
+    if (!p.box || p.kind !== 'pdf' || !this.hasMargin(p.key)) return { x0: 0, w: 0 };
+    const full = p.w * MARGIN_FRAC;
+    if (p.head || !(p.ncol > 1)) return { x0: p.w, w: full };
+    const w = full / p.ncol;
+    return { x0: p.w + Math.max(0, p.ci) * w, w };
+  }
+
+  // ponto da tela -> ponto da página (na faixa de margem do modo artigo, cai na margem da página)
+  toPage(s, cx, cy, region) {
+    const r = s.slot.getBoundingClientRect(), k = this.k(s);
+    if (s.am && s.amw) {
+      const a = s.am.getBoundingClientRect();
+      if (region === 'am' || (region === undefined && cx >= a.left)) return [s.am0 + (cx - a.left) / k, (cy - r.top) / k, 'am'];
+    }
+    return [(cx - r.left) / k, (cy - r.top) / k, 'pg'];
+  }
+
   sizeSlot(s) {
     const { p } = s;
     const sc = this.scale * (p.fit || 1);
@@ -248,16 +270,36 @@ export class Viewer {
     const mw = this.hasMargin(p.key) && !p.box ? p.w * MARGIN_FRAC : 0;
     const cb = p.box || (this.cropBox && p.kind === 'pdf' && !mw ? this.cropBox : null);
     s.cb = cb;
+    const am = this.amOf(p);
+    s.amw = am.w; s.am0 = am.x0;
+    if (s.am && !am.w) { s.am.remove(); s.am = null; }
     if (cb) {
       const [fx, fy, fw, fh] = cb;
-      s.wrap.style.width = (p.w * fw * sc) + 'px';
-      s.clip.style.width = (p.w * fw * sc) + 'px'; s.clip.style.height = (p.h * fh * sc) + 'px'; s.clip.style.overflow = 'hidden';
+      s.wrap.style.width = ((p.w * fw + am.w) * sc) + 'px';
+      s.clip.style.width = ((p.w * fw + am.w) * sc) + 'px'; s.clip.style.height = (p.h * fh * sc) + 'px'; s.clip.style.overflow = 'hidden';
+      if (am.w) {
+        // a faixa da margem: mostra (com <use>) o mesmo desenho da página, na região da margem
+        if (!s.am) {
+          if (!s.svg.id) { s.uid = s.uid || uid('sv'); s.svg.querySelector('g.ann').id = s.uid + 'a'; s.live.id = s.uid + 'l'; s.svg.id = s.uid; }
+          const asv = sv('svg', { class: 'ov amov' });
+          asv.appendChild(sv('use', { href: '#' + s.uid + 'a' }));
+          asv.appendChild(sv('use', { href: '#' + s.uid + 'l' }));
+          s.am = h('div.amg', asv);
+          s.clip.style.position = 'relative';
+          s.clip.appendChild(s.am);
+        }
+        const asv = s.am.firstChild;
+        s.am.style.left = (p.w * fw * sc) + 'px'; s.am.style.width = (am.w * sc) + 'px'; s.am.style.height = (p.h * fh * sc) + 'px';
+        asv.setAttribute('viewBox', `${am.x0} ${p.h * fy} ${am.w} ${p.h * fh}`);
+        asv.setAttribute('width', am.w * sc); asv.setAttribute('height', p.h * fh * sc);
+      }
       s.slot.style.marginLeft = (-p.w * fx * sc) + 'px'; s.slot.style.marginTop = (-p.h * fy * sc) + 'px';
     } else {
       s.clip.style.width = ''; s.clip.style.height = ''; s.clip.style.overflow = '';
       s.slot.style.marginLeft = ''; s.slot.style.marginTop = '';
     }
     s.wrap.style.width = cb ? s.wrap.style.width : ((p.w + mw) * sc) + 'px';
+    if (s.am) s.am.style.setProperty('--s', sc);
     s.slot.style.width = ((p.w + mw) * sc) + 'px';
     s.slot.style.height = (p.h * sc) + 'px';
     s.pg.style.width = (p.w * sc) + 'px';
@@ -408,6 +450,7 @@ export class Viewer {
         const im = h('img.nbimg', { src: url, alt: '', draggable: 'false', 'data-id': a.id });
         im.style.left = `calc(var(--s) * ${a.x}px)`; im.style.top = `calc(var(--s) * ${a.y}px)`;
         im.style.width = `calc(var(--s) * ${a.w}px)`; im.style.height = `calc(var(--s) * ${a.h}px)`;
+        if (a.rot) { im.style.transform = `rotate(${a.rot}deg)`; im.dataset.rot = a.rot; }
         s.iml.appendChild(im);
         freezeIfGif(im);
       }
@@ -551,7 +594,7 @@ export class Viewer {
     for (const a of this.annsOf(s.p.key)) {
       if (!ids.has(a.id)) continue;
       if (a.kind === 'ink') for (const p of a.pts) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
-      else if (a.kind === 'img') { x0 = Math.min(x0, a.x); y0 = Math.min(y0, a.y); x1 = Math.max(x1, a.x + a.w); y1 = Math.max(y1, a.y + a.h); }
+      else if (a.kind === 'img') for (const [px, py] of imgCorners(a)) { x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py); }
       else if (a.kind === 'tbox') { const el = this.boxEl(s, a.id); const hh = el ? el.offsetHeight / this.scale : 20; x0 = Math.min(x0, a.x); y0 = Math.min(y0, a.y); x1 = Math.max(x1, a.x + a.w); y1 = Math.max(y1, a.y + hh); }
       else if (a.kind === 'note') { x0 = Math.min(x0, a.x - 9); y0 = Math.min(y0, a.y - 9); x1 = Math.max(x1, a.x + 9); y1 = Math.max(y1, a.y + 9); }
       else if (a.kind === 'link') for (const [rx, ry, rw, rh] of a.rects) { x0 = Math.min(x0, rx); y0 = Math.min(y0, ry); x1 = Math.max(x1, rx + rw); y1 = Math.max(y1, ry + rh); }
@@ -561,14 +604,48 @@ export class Viewer {
     return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
   }
 
-  setSelection(s, ids, poly) {
+  setSelection(s, ids, poly, opts = {}) {
     this.clearSelection();
     if (!ids.size) return;
+    ids = this.withGroups(s, ids);
     this.sel = { s, ids, bbox: this.bboxOf(s, ids), poly: poly && poly.length > 4 ? poly : null };
     if (!this.sel.bbox) { this.sel = null; return; }
     this.drawSelection();
     this.applyMode();
-    this.app.onObjectSelection && this.app.onObjectSelection(this, this.sel);
+    if (!opts.quiet) this.app.onObjectSelection && this.app.onObjectSelection(this, this.sel);
+  }
+
+  // seleciona assim que as anotações novas chegarem do banco (forma recém-desenhada, cópia…)
+  async selectNew(s, ids, opts) {
+    this.anns = await S.annots(this.doc.id);
+    this.setSelection(s, new Set(ids), null, opts);
+  }
+
+  // uma forma é feita de vários traços: selecionar um pega a forma inteira
+  withGroups(s, ids) {
+    const list = this.annsOf(s.p.key);
+    const groups = new Set(list.filter(a => ids.has(a.id) && a.sgroup).map(a => a.sgroup));
+    if (!groups.size) return ids;
+    const out = new Set(ids);
+    for (const a of list) if (a.sgroup && groups.has(a.sgroup)) out.add(a.id);
+    return out;
+  }
+
+  // toque com o laço em cima de um traço/imagem: seleciona aquilo (e a forma inteira)
+  pickAt(s, x, y) {
+    const tol = 10 / this.k(s) + 3;
+    const list = this.annsOf(s.p.key);
+    for (const a of list.filter(a => a.kind === 'img').reverse()) if (pointInPoly(imgCorners(a), x, y)) return new Set([a.id]);
+    let best = null, bd = tol;
+    for (const a of list) {
+      if (a.kind !== 'ink') continue;
+      for (let i = 0; i < a.pts.length; i++) {
+        const p = a.pts[i], q = a.pts[i + 1] || p;
+        const d = segDist(x, y, p[0], p[1], q[0], q[1]);
+        if (d < bd) { bd = d; best = a; }
+      }
+    }
+    return best ? new Set([best.id]) : new Set();
   }
 
   refreshSelection() {
@@ -587,9 +664,22 @@ export class Viewer {
     // a seleção tem a forma que você desenhou com o laço
     if (this.sel.poly) g.appendChild(sv('path', { d: 'M' + this.sel.poly.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') + 'Z', class: 'selrect selpoly' }));
     else g.appendChild(sv('rect', { x, y, width: w, height: hh, class: 'selrect' }));
-    const single = this.sel.ids.size === 1 && this.annsOf(this.sel.s.p.key).find(a => this.sel.ids.has(a.id) && (a.kind === 'img' || a.kind === 'tbox'));
-    if (single) g.appendChild(sv('rect', { x: x + w - 7, y: y + hh - 7, width: 14, height: 14, class: 'selhandle' }));
-    this.sel.single = single || null;
+    const mine = this.annsOf(this.sel.s.p.key).filter(a => this.sel.ids.has(a.id));
+    const single = mine.length === 1 && (mine[0].kind === 'img' || mine[0].kind === 'tbox') ? mine[0] : null;
+    this.sel.single = single;
+    // canto de baixo: muda o tamanho (proporcional); bolinha em cima: gira (como na Boox/GoodNotes)
+    const hs = Math.max(10, 16 / this.k(this.sel.s));
+    const canScale = mine.some(a => a.kind === 'ink' || a.kind === 'img' || a.kind === 'tbox');
+    if (canScale) g.appendChild(sv('rect', { x: x + w - hs / 2, y: y + hh - hs / 2, width: hs, height: hs, class: 'selhandle' }));
+    this.sel.canRot = mine.some(a => a.kind === 'ink' || a.kind === 'img');
+    if (this.sel.canRot) {
+      const gap = Math.max(18, 28 / this.k(this.sel.s));
+      const ry = y - gap >= 0 ? y - gap : y + hh + gap;
+      this.sel.rotPt = [x + w / 2, ry];
+      g.appendChild(sv('line', { x1: x + w / 2, y1: ry, x2: x + w / 2, y2: ry < y ? y : y + hh, class: 'selrotline' }));
+      g.appendChild(sv('circle', { cx: x + w / 2, cy: ry, r: hs / 2, class: 'selrot' }));
+    }
+    this.sel.hs = hs;
     this.sel.s.live.appendChild(g);
   }
 
@@ -604,7 +694,9 @@ export class Viewer {
   inSel(hit, handleOnly) {
     if (!this.sel || hit.s !== this.sel.s) return null;
     const [x, y, w, hh] = this.sel.bbox;
-    if (this.sel.single && Math.abs(hit.x - (x + w)) < 12 / this.scale + 6 && Math.abs(hit.y - (y + hh)) < 12 / this.scale + 6) return 'resize';
+    const tol = (this.sel.hs || 14) / 2 + 8 / this.k(hit.s) + 2;
+    if (this.sel.canRot && this.sel.rotPt && Math.hypot(hit.x - this.sel.rotPt[0], hit.y - this.sel.rotPt[1]) < tol) return 'rotate';
+    if (Math.abs(hit.x - (x + w)) < tol && Math.abs(hit.y - (y + hh)) < tol) return this.sel.single && this.sel.single.kind === 'tbox' ? 'resize' : 'scale';
     if (handleOnly) return null;
     if (this.sel.poly && pointInPoly(this.sel.poly, hit.x, hit.y)) return 'move';
     return hit.x >= x && hit.x <= x + w && hit.y >= y && hit.y <= y + hh ? 'move' : null;
@@ -640,7 +732,7 @@ export class Viewer {
       const e = s.svg.querySelector(`g.ann [data-id="${id}"]`);
       if (e) e.setAttribute('transform', (e.dataset.base0 !== undefined ? e.dataset.base0 : (e.dataset.base0 = e.getAttribute('transform') || '')) + ` translate(${dx} ${dy})`);
       const b = this.boxEl(s, id) || (s.iml && s.iml.querySelector(`[data-id="${id}"]`));
-      if (b) b.style.transform = `translate(${dx * this.scale}px, ${dy * this.scale}px)`;
+      if (b) b.style.transform = `translate(${dx * this.k(s)}px, ${dy * this.k(s)}px)` + (b.dataset.rot ? ` rotate(${b.dataset.rot}deg)` : '');
     }
     const sb = s.live.querySelector('.selbox');
     if (sb) sb.setAttribute('transform', `translate(${dx} ${dy})`);
@@ -659,6 +751,57 @@ export class Viewer {
     if (this.sel.poly) this.sel.poly = this.sel.poly.map(p => [p[0] + dx, p[1] + dy]);
     await S.putAnnotsGroup(changed);
   }
+
+  // mudar o tamanho (f) a partir do canto de cima à esquerda, ou girar (graus) em torno do centro
+  xformMap(kind, v) {
+    const [x, y, w, hh] = this.sel.bbox;
+    if (kind === 'scale') return (px, py) => [x + (px - x) * v, y + (py - y) * v];
+    const cx = x + w / 2, cy = y + hh / 2, t = v * Math.PI / 180, c = Math.cos(t), sn = Math.sin(t);
+    return (px, py) => [cx + (px - cx) * c - (py - cy) * sn, cy + (px - cx) * sn + (py - cy) * c];
+  }
+  previewXform(kind, v) {
+    const { s, ids } = this.sel;
+    const [x, y, w, hh] = this.sel.bbox;
+    const tr = kind === 'scale' ? `translate(${x} ${y}) scale(${v}) translate(${-x} ${-y})` : `rotate(${v} ${x + w / 2} ${y + hh / 2})`;
+    const M = this.xformMap(kind, v), k = this.k(s);
+    for (const a of this.annsOf(s.p.key)) {
+      if (!ids.has(a.id)) continue;
+      const e = s.svg.querySelector(`g.ann [data-id="${a.id}"]`);
+      if (e) e.setAttribute('transform', (e.dataset.base0 !== undefined ? e.dataset.base0 : (e.dataset.base0 = e.getAttribute('transform') || '')) + ' ' + tr);
+      const b = this.boxEl(s, a.id) || (s.iml && s.iml.querySelector(`[data-id="${a.id}"]`));
+      if (!b) continue;
+      if (a.kind === 'img') {
+        const c0 = [a.x + a.w / 2, a.y + a.h / 2], q = M(c0[0], c0[1]);
+        const f = kind === 'scale' ? v : 1, r = (a.rot || 0) + (kind === 'rotate' ? v : 0);
+        b.style.transform = `translate(${(q[0] - c0[0]) * k}px, ${(q[1] - c0[1]) * k}px) rotate(${r}deg) scale(${f})`;
+      } else {
+        const q = M(a.x, a.y);
+        b.style.transformOrigin = '0 0';
+        b.style.transform = `translate(${(q[0] - a.x) * k}px, ${(q[1] - a.y) * k}px)`;
+        if (kind === 'scale' && a.kind === 'tbox') b.style.width = `calc(var(--s) * ${a.w * v}px)`;
+      }
+    }
+    const sb = s.live.querySelector('.selbox');
+    if (sb) sb.setAttribute('transform', tr);
+  }
+  async commitXform(kind, v) {
+    const { s, ids } = this.sel;
+    const M = this.xformMap(kind, v);
+    const f = kind === 'scale' ? v : 1, deg = kind === 'rotate' ? v : 0;
+    const changed = this.annsOf(s.p.key).filter(a => ids.has(a.id)).map(a => xformAnn(a, M, f, deg));
+    this.sel.poly = null;
+    await S.putAnnotsGroup(changed);
+  }
+  // espelhar (só traços)
+  async flipSel(horiz) {
+    const { s, ids } = this.sel;
+    const [x, y, w, hh] = this.sel.bbox, cx = x + w / 2, cy = y + hh / 2;
+    const M = horiz ? (px, py) => [2 * cx - px, py] : (px, py) => [px, 2 * cy - py];
+    const changed = this.annsOf(s.p.key).filter(a => ids.has(a.id) && a.kind === 'ink').map(a => xformAnn(a, M, 1, 0));
+    this.sel.poly = null;
+    await S.putAnnotsGroup(changed);
+  }
+  async rotateSel(deg) { this.sel.poly = null; await this.commitXform('rotate', deg); }
 
   async commitResize(a, nw) {
     const c = JSON.parse(JSON.stringify(a));
@@ -740,7 +883,10 @@ export class Viewer {
     for (const s of this.slots.values()) {
       const r = s.slot.getBoundingClientRect();
       const c = s.cb ? s.clip.getBoundingClientRect() : r;   // página recortada: só a parte visível conta
-      if (clientX >= c.left && clientX <= c.right && clientY >= c.top && clientY <= c.bottom) return { s, x: (clientX - r.left) / this.k(s), y: (clientY - r.top) / this.k(s) };
+      if (clientX >= c.left && clientX <= c.right && clientY >= c.top && clientY <= c.bottom) {
+        if (s.am && s.amw) { const [x, y, region] = this.toPage(s, clientX, clientY); return { s, x, y, region }; }
+        return { s, x: (clientX - r.left) / this.k(s), y: (clientY - r.top) / this.k(s), region: 'pg' };
+      }
     }
     return null;
   }
@@ -809,15 +955,15 @@ export class Viewer {
       return;
     }
     // objeto selecionado: arrastar move; a alça do canto redimensiona
-    if (this.sel && hit && (tool === 'read' || tool === 'lasso' || tool === 'text')) {
+    if (this.sel && hit && (tool === 'read' || tool === 'lasso' || tool === 'text' || tool === 'shape')) {
       const where = this.inSel(hit);
       if (where && (this.canDraw(e) || this.pointers.size === 1)) {
         e.preventDefault();
         try { this.scroller.setPointerCapture(e.pointerId); } catch (er) {}
-        this.op = { type: where, s: hit.s, cx0: e.clientX, cy0: e.clientY, id: e.pointerId, a: this.sel.single };
+        this.op = { type: where, s: hit.s, cx0: e.clientX, cy0: e.clientY, id: e.pointerId, a: this.sel.single, region: hit.region };
         return;
       }
-      if (!where && this.pointers.size === 1 && (e.pointerType !== 'touch' || tool !== 'lasso')) { this.clearSelection(); }
+      if (!where && this.pointers.size === 1 && (e.pointerType !== 'touch' || (tool !== 'lasso' && tool !== 'shape'))) { this.clearSelection(); }
     }
     if (tool === 'read' && !this.sel) return;
     if (this.canDraw(e) && hit && tool !== 'read' && tool !== 'text') {
@@ -832,21 +978,21 @@ export class Viewer {
         const path = sv('path', { stroke: a.color, 'stroke-width': a.width, fill: 'none', 'stroke-linecap': tool === 'marker' ? 'butt' : 'round', 'stroke-linejoin': 'round' });
         if (tool === 'marker') path.setAttribute('opacity', '0.42');
         hit.s.live.appendChild(path);
-        this.op = { type: 'ink', s: hit.s, a, path, id: e.pointerId, t0: Date.now() };
+        this.op = { type: 'ink', s: hit.s, a, path, id: e.pointerId, t0: Date.now(), region: hit.region };
         this.addPt(e);
         return;
       }
       if (tool === 'linkrect' || tool === 'crop' || tool === 'shape') {
         const r = sv('rect', { class: tool === 'crop' || tool === 'shape' ? 'croprect' : 'ulink live', x: hit.x, y: hit.y, width: 0, height: 0 });
         hit.s.live.appendChild(r);
-        this.op = { type: 'rect', s: hit.s, x0: hit.x, y0: hit.y, r, id: e.pointerId, crop: tool === 'crop', shape: tool === 'shape' };
+        this.op = { type: 'rect', s: hit.s, x0: hit.x, y0: hit.y, r, id: e.pointerId, crop: tool === 'crop', shape: tool === 'shape', region: hit.region };
         return;
       }
       if (tool === 'note') { this.op = { type: 'note', s: hit.s, x: hit.x, y: hit.y, id: e.pointerId }; return; }
       if (tool === 'lasso') {
         const path = sv('path', { class: 'lassop', d: '' });
         hit.s.live.appendChild(path);
-        this.op = { type: 'lasso', s: hit.s, pts: [[hit.x, hit.y]], path, id: e.pointerId };
+        this.op = { type: 'lasso', s: hit.s, pts: [[hit.x, hit.y]], path, id: e.pointerId, region: hit.region };
         return;
       }
     }
@@ -863,11 +1009,11 @@ export class Viewer {
   addPt(e) {
     const op = this.op;
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-    const r = op.s.slot.getBoundingClientRect();
     const maxX = op.s.p.w * (this.hasMargin(op.s.p.key) ? 1 + MARGIN_FRAC : 1);
     for (const ev of (evs.length ? evs : [e])) {
-      const x = Math.max(0, Math.min(maxX, (ev.clientX - r.left) / this.k(op.s)));
-      const y = Math.max(0, Math.min(op.s.p.h, (ev.clientY - r.top) / this.k(op.s)));
+      const q = this.toPage(op.s, ev.clientX, ev.clientY, op.region);
+      const x = Math.max(0, Math.min(maxX, q[0]));
+      const y = Math.max(0, Math.min(op.s.p.h, q[1]));
       const p = ev.pointerType === 'pen' ? (ev.pressure || 0.5) : 0.5;
       const last = op.a.pts[op.a.pts.length - 1];
       if (last && Math.hypot(last[0] - x, last[1] - y) < 0.35 / this.k(op.s) * 2) continue;
@@ -923,12 +1069,27 @@ export class Viewer {
       if (op.type === 'ink') this.addPt(e);
       else if (op.type === 'erase') { const hit = this.slotAt(e.clientX, e.clientY); if (hit && hit.s === op.s) this.eraseAt(hit); }
       else if (op.type === 'lasso') {
-        const r = op.s.slot.getBoundingClientRect();
-        op.pts.push([(e.clientX - r.left) / this.k(op.s), (e.clientY - r.top) / this.k(op.s)]);
+        const q = this.toPage(op.s, e.clientX, e.clientY, op.region);
+        op.pts.push([q[0], q[1]]);
         op.path.setAttribute('d', 'M' + op.pts.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') + 'Z');
       } else if (op.type === 'move') {
-        op.dx = (e.clientX - op.cx0) / this.scale; op.dy = (e.clientY - op.cy0) / this.scale;
+        op.dx = (e.clientX - op.cx0) / this.k(op.s); op.dy = (e.clientY - op.cy0) / this.k(op.s);
         this.previewMove(op.dx, op.dy);
+      } else if (op.type === 'scale' && this.sel) {
+        const [, , w, hh] = this.sel.bbox;
+        const dx = (e.clientX - op.cx0) / this.k(op.s), dy = (e.clientY - op.cy0) / this.k(op.s);
+        op.v = Math.max(0.1, Math.min(12, ((w + dx) / w + (hh + dy) / hh) / 2));
+        this.previewXform('scale', op.v);
+      } else if (op.type === 'rotate' && this.sel) {
+        const [x, y, w, hh] = this.sel.bbox, cx = x + w / 2, cy = y + hh / 2;
+        const q = this.toPage(op.s, e.clientX, e.clientY, op.region);
+        const a0 = Math.atan2(this.sel.rotPt[1] - cy, this.sel.rotPt[0] - cx), a1 = Math.atan2(q[1] - cy, q[0] - cx);
+        let deg = (a1 - a0) * 180 / Math.PI;
+        deg = ((deg + 540) % 360) - 180;
+        const snap = Math.round(deg / 45) * 45;
+        if (Math.abs(deg - snap) < 4) deg = snap;   // encaixa em 0°, 45°, 90°…
+        op.v = deg;
+        this.previewXform('rotate', deg);
       } else if (op.type === 'resize' && op.a) {
         const dx = (e.clientX - op.cx0) / this.scale;
         op.nw = Math.max(30, op.a.w + dx);
@@ -937,8 +1098,7 @@ export class Viewer {
         if (el && op.a.kind === 'img') el.style.height = `calc(var(--s) * ${op.a.h * op.nw / op.a.w}px)`;
       }
       else if (op.type === 'rect') {
-        const r = op.s.slot.getBoundingClientRect();
-        const x = (e.clientX - r.left) / this.k(op.s), y = (e.clientY - r.top) / this.k(op.s);
+        const [x, y] = this.toPage(op.s, e.clientX, e.clientY, op.region);
         op.r.setAttribute('x', Math.min(x, op.x0)); op.r.setAttribute('y', Math.min(y, op.y0));
         op.r.setAttribute('width', Math.abs(x - op.x0)); op.r.setAttribute('height', Math.abs(y - op.y0));
       }
@@ -995,13 +1155,18 @@ export class Viewer {
         this.app.noteAt(this, op.s.p.key, op.x, op.y, e.clientX, e.clientY);
       } else if (op.type === 'lasso') {
         op.path.remove();
-        const ids = op.pts.length > 4 ? this.lassoSelect(op.s, op.pts) : new Set();
-        if (ids.size) this.setSelection(op.s, ids, op.pts); else this.clearSelection();
+        const tap = op.pts.length <= 4 || Math.max(...op.pts.map(p => Math.hypot(p[0] - op.pts[0][0], p[1] - op.pts[0][1]))) < 6 / this.k(op.s);
+        const ids = tap ? this.pickAt(op.s, op.pts[0][0], op.pts[0][1]) : this.lassoSelect(op.s, op.pts);
+        if (ids.size) this.setSelection(op.s, ids, tap ? null : op.pts); else this.clearSelection();
       } else if (op.type === 'move') {
         if (!cancelled && (Math.abs(op.dx || 0) > 0.5 || Math.abs(op.dy || 0) > 0.5)) await this.commitMove(op.dx, op.dy);
         else if (this.sel) { this.previewMove(0, 0); this.app.onObjectSelection && this.app.onObjectSelection(this, this.sel, e.clientX, e.clientY); }
       } else if (op.type === 'resize') {
         if (!cancelled && op.nw && op.a) await this.commitResize(op.a, op.nw);
+      } else if (op.type === 'scale' || op.type === 'rotate') {
+        const moved = op.v !== undefined && (op.type === 'scale' ? Math.abs(op.v - 1) > 0.005 : Math.abs(op.v) > 0.2);
+        if (!cancelled && moved && this.sel) await this.commitXform(op.type, op.v);
+        else if (this.sel) { this.previewXform(op.type, op.type === 'scale' ? 1 : 0); }
       }
       return;
     }
@@ -1076,15 +1241,15 @@ export class Viewer {
     if (!pts.length || !this.doc) return;
     const hit = this.slotAt(pts[0][0], pts[0][1]);
     if (!hit) return;
-    const s = hit.s, r = s.slot.getBoundingClientRect();
+    const s = hit.s;
     const maxX = s.p.w * (this.hasMargin(s.p.key) ? 1 + MARGIN_FRAC : 1);
     const maxP = Math.max(...pts.map(q => q[2] || 0), 0);
     const t0 = pts[0][3] || 0;
-    const loc = pts.map(q => [
-      +Math.max(0, Math.min(maxX, (q[0] - r.left) / this.k(s))).toFixed(2),
-      +Math.max(0, Math.min(s.p.h, (q[1] - r.top) / this.k(s))).toFixed(2),
+    const loc = pts.map(q => { const pp = this.toPage(s, q[0], q[1], hit.region); return [
+      +Math.max(0, Math.min(maxX, pp[0])).toFixed(2),
+      +Math.max(0, Math.min(s.p.h, pp[1])).toFixed(2),
       +(maxP > 1 ? Math.min(1, (q[2] || 0) / maxP) * 0.8 : (q[2] || 0.5)).toFixed(2),
-      Math.max(0, Math.round((q[3] || 0) - t0))]);
+      Math.max(0, Math.round((q[3] || 0) - t0))]; });
     if (o.erase || this.app.tool === 'eraser') {
       this.op = this.eraseOp(s);
       for (const q of loc) this.eraseAt({ s, x: q[0], y: q[1] });
@@ -1221,4 +1386,29 @@ export function darker(hex) {
   const n = parseInt(hex.slice(1), 16);
   const f = c => Math.max(0, Math.round(c * 0.55));
   return '#' + [f(n >> 16 & 255), f(n >> 8 & 255), f(n & 255)].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+// cantos de uma imagem (girada em torno do centro)
+export function imgCorners(a) {
+  const cx = a.x + a.w / 2, cy = a.y + a.h / 2, t = (a.rot || 0) * Math.PI / 180, c = Math.cos(t), sn = Math.sin(t);
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => { const dx = u * a.w / 2, dy = v * a.h / 2; return [cx + dx * c - dy * sn, cy + dx * sn + dy * c]; });
+}
+function segDist(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1, L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / L)) : 0;
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+// aplica mover/escala/girar a uma anotação (cópia)
+export function xformAnn(a, M, f, deg) {
+  const c = JSON.parse(JSON.stringify(a));
+  const r2 = v => +v.toFixed(2);
+  if (c.kind === 'ink') c.pts = c.pts.map(p => { const q = M(p[0], p[1]); return [r2(q[0]), r2(q[1]), p[2], p[3]]; });
+  else if (c.kind === 'img') {
+    const q = M(c.x + c.w / 2, c.y + c.h / 2);
+    c.w *= f; c.h *= f; c.x = q[0] - c.w / 2; c.y = q[1] - c.h / 2;
+    if (deg) { let r = ((c.rot || 0) + deg) % 360; if (r > 180) r -= 360; if (r < -180) r += 360; c.rot = Math.abs(r) < 0.01 ? 0 : +r.toFixed(2); }
+  } else if (c.kind === 'tbox') { const q = M(c.x, c.y); c.x = q[0]; c.y = q[1]; c.w *= f; }
+  else if (c.kind === 'note') { const q = M(c.x, c.y); c.x = q[0]; c.y = q[1]; }
+  else if (c.kind === 'link') c.rects = c.rects.map(r => { const q = M(r[0], r[1]); return [q[0], q[1], r[2] * f, r[3] * f]; });
+  return c;
 }

@@ -180,13 +180,17 @@ export class Reader {
       const c = SH.renderField(sh, 400);
       const blob = await new Promise(res => c.toBlob(res, 'image/png'));
       const im = await NB.storeImage(blob);
-      await S.putAnnot({ kind: 'img', docId: v.doc.id, pageKey: slot.p.key, fileId: im.fileId, x, y, w, h: hh });
+      const a = await S.putAnnot({ kind: 'img', docId: v.doc.id, pageKey: slot.p.key, fileId: im.fileId, x, y, w, h: hh, shape: sh.id });
+      await v.selectNew(slot, [a.id], { quiet: true });
       return;
     }
     const SH = await import('./shapes.js');
     const lines = SH.placeShape(sh, x, y, w, hh);
-    const list = lines.filter(pts => pts.length > 1).map(pts => ({ kind: 'ink', tool: 'pen', shape: sh.id, docId: v.doc.id, pageKey: slot.p.key, color: st.penColor || '#16191D', width: st.penWidth || 2, pts }));
+    const sgroup = uid('sg');   // os traços da forma andam juntos (selecionar um pega todos)
+    const list = lines.filter(pts => pts.length > 1).map(pts => ({ kind: 'ink', tool: 'pen', shape: sh.id, sgroup, docId: v.doc.id, pageKey: slot.p.key, color: st.penColor || '#16191D', width: st.penWidth || 2, pts }));
     await S.putAnnotsGroup(list);
+    // já fica selecionada: arraste para mover, canto para o tamanho, bolinha para girar
+    await v.selectNew(slot, list.map(a => a.id), { quiet: true });
   }
 
   // ---------- arquivos recentes (troca rápida) ----------
@@ -973,6 +977,7 @@ export class Reader {
       btn('speak', 'Ouvir', () => { speak(cleanText(this.sel.text)); }, { cls: 'mbtn lbl' }),
       btn('translate', 'Traduzir', () => { const b2 = this.sel.box; translatePop(cleanText(this.sel.text), b2, this.selDoc()); }, { cls: 'mbtn lbl' }),
       btn('wiki', 'Wikipédia', () => { const b2 = this.sel.box; wikiPop(cleanText(this.sel.text), b2); }, { cls: 'mbtn lbl' }),
+      btn('sigma', 'Índice n,k', async () => { const b2 = this.sel.box; (await import('./nkdb.js')).nkPop(cleanText(this.sel.text), b2); }, { cls: 'mbtn lbl', title: 'Índice de refração do material (refractiveindex.info) — Alt+N' }),
       btn('ai', 'IA', e => this.aiMenu(e), { cls: 'mbtn lbl' }),
     );
     const dragB = btn('grip', 'Arrastar', () => {}, { cls: 'mbtn lbl', title: 'Arraste o trecho para um caderno ou texto' });
@@ -1452,20 +1457,24 @@ export class Reader {
     const hasInk = list().some(a => a.kind === 'ink');
     const items = [
       { icon: 'copy', label: 'Duplicar', onclick: async () => {
-        const copies = list().map(a => { const c = JSON.parse(JSON.stringify(a)); c.id = uid('a'); delete c.rec; if (c.kind === 'ink') c.pts = c.pts.map(p => [p[0] + 14, p[1] + 14, p[2], p[3]]); else { c.x += 14; c.y += 14; } return c; });
+        const gmap = {};
+        const copies = list().map(a => { const c = JSON.parse(JSON.stringify(a)); c.id = uid('a'); delete c.rec; if (c.sgroup) c.sgroup = gmap[c.sgroup] || (gmap[c.sgroup] = uid('sg')); if (c.kind === 'ink') c.pts = c.pts.map(p => [p[0] + 14, p[1] + 14, p[2], p[3]]); else { c.x += 14; c.y += 14; } return c; });
         await S.putAnnotsGroup(copies);
-        v.setSelection(sel.s, new Set(copies.map(c => c.id)));
+        await v.selectNew(sel.s, copies.map(c => c.id));
       } },
       hasInk ? { icon: 'pen', label: 'Mudar cor do traço', onclick: () => {
         const m = popMenu(px, py, INK_COLORS.map(c => ({ label: '●', onclick: async () => { const ch = list().filter(a => a.kind === 'ink').map(a => Object.assign(JSON.parse(JSON.stringify(a)), { color: c })); await S.putAnnotsGroup(ch); } })));
         [...m.querySelectorAll('button')].forEach((b, i) => { b.style.color = INK_COLORS[i]; b.style.fontSize = '22px'; });
       } } : null,
+      sel.canRot ? { icon: 'refresh', label: 'Girar 90°', onclick: () => v.rotateSel(90) } : null,
+      hasInk ? { icon: 'swap', label: 'Espelhar (esquerda ↔ direita)', onclick: () => v.flipSel(true) } : null,
+      hasInk ? { icon: 'swap', label: 'Espelhar (cima ↔ baixo)', onclick: () => v.flipSel(false) } : null,
       { icon: 'link', label: 'Criar link a partir da seleção', onclick: () => { const bb = sel.bbox; const s0 = sel.s; v.clearSelection(); this.linkBuilder(v, { pageKey: s0.p.key, rects: [[bb[0], bb[1], bb[2], bb[3]]], text: '' }); } },
       { icon: 'trash', label: 'Apagar', danger: true, onclick: async () => { await S.delAnnots(list()); v.clearSelection(); } },
     ];
     const m = popMenu(Math.min(px, innerWidth - 260), Math.max(70, py), items);
     m.classList.add('objmenu');
-    m.prepend(h('div.popnote', sel.ids.size + ' item(ns) selecionado(s). Arraste para mover' + (sel.single ? '; o quadradinho no canto muda o tamanho' : '') + '.'));
+    m.prepend(h('div.popnote', sel.ids.size + ' item(ns) selecionado(s). Arraste para mover; o quadradinho no canto muda o tamanho' + (sel.canRot ? '; a bolinha em cima gira' : '') + '.'));
   }
 
   imageMenu(e) {

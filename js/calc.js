@@ -63,6 +63,7 @@ const sec = (host, t, note) => { host.appendChild(h('div.csec', t)); if (note) h
 // ---------- calculadoras ----------
 const CALCS = [
   ['luz', 'Óptica · λ, energia, número de onda'],
+  ['nk', 'Índice de refração dos materiais (refractiveindex.info)'],
   ['raman', 'Espectroscopia · Raman e linhas'],
   ['gauss', 'Feixe gaussiano'],
   ['foco', 'Focalização · resolução e intensidade'],
@@ -74,6 +75,7 @@ const CALCS = [
 
 function buildCalc(id, host) {
   clear(host);
+  if (id === 'nk') { import('./nkdb.js').then(m => m.buildNk(host)); return; }
   const { h: hp, c, e, kB, NA } = K;
   if (id === 'luz') {
     sec(host, 'Fóton', 'Digite em qualquer campo; os outros mudam juntos.');

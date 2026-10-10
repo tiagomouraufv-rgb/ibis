@@ -640,7 +640,8 @@ export class TextScreen extends MdEditBase {
       b('note', 'Nota', () => { this.lastI = i; this.addBlock('> [!note] Sobre “' + text.slice(0, 60) + (text.length > 60 ? '…' : '') + '”\n> @'); }),
       b('copy', 'Copiar', () => { copyText(text); toast('Copiado.'); }),
       b('translate', 'Traduzir', () => translatePop(text, rect, this.doc)),
-      b('wiki', 'Wikipédia', () => wikiPop(text, rect)));
+      b('wiki', 'Wikipédia', () => wikiPop(text, rect)),
+      b('sigma', 'Índice n,k', async () => (await import('./nkdb.js')).nkPop(text, rect)));
     const dg = h('button.mbtn', { type: 'button', title: 'Arraste o trecho para um caderno ou outro texto' }, icon('grip', 18), h('span', 'Arrastar'));
     makeDraggable(dg, () => ({ kind: 'text', text, docId: this.doc.id, pageKey: this.nearestHeading(i), y: 0, title: S.docTitle(this.doc), label: pageLabel(this.nearestHeading(i), this.doc) }));
     dg.addEventListener('pointerdown', e => (e.pointerType !== 'mouse' || window.AndroidBridge) && setTimeout(() => this.hideSel(), 60));

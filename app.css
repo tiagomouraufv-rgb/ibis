@@ -763,3 +763,34 @@ html[data-form="phone"] .pick3 { grid-template-columns: minmax(0, 1fr); }
 .crow.const .cval { text-align: left; font: 12.5px var(--font); border: 1px solid var(--line); background: var(--soft); border-radius: 7px; padding: 5px 6px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .csep { height: 1px; background: var(--line); margin: 6px 0; }
 html[data-form="phone"] .mathpal.open.wide { width: auto; height: 60vh; }
+
+/* 1.0.1: margem expandida no modo artigo (faixa ao lado de cada coluna) */
+.amg { position: absolute; top: 0; z-index: 4; background: #fbfbf9 linear-gradient(#e9ecef 1px, transparent 1px) 0 0 / 100% 22px; box-shadow: inset 2px 0 0 #c4ccd4; overflow: hidden; }
+.amg svg.amov { position: absolute; left: 0; top: 0; }
+.amg svg.amov { overflow: hidden; }
+.reader[data-pdfmode="sepia"] .amg { filter: sepia(.5) saturate(1.1) brightness(.96); }
+.reader[data-pdfmode="escuro"] .amg { filter: invert(.9) hue-rotate(180deg); }
+/* 1.0.1: girar e mudar o tamanho da seleção */
+.selrot { fill: #1D5A8A; stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.selrotline { stroke: #1D5A8A; stroke-width: 1; vector-effect: non-scaling-stroke; }
+/* 1.0.1: índice de refração (refractiveindex.info) */
+.nkpop { width: min(360px, calc(100vw - 16px)); }
+.nkpop .lookbody { max-height: min(70vh, 560px); overflow: auto; }
+.nkwrap .nksearch input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--line, #d5dbe1); border-radius: 8px; font: inherit; }
+.nkbody { margin-top: 8px; }
+.nktitle { margin: 6px 0 2px; font-size: 16px; }
+.nkchips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
+.nkchips .chip { border: 1px solid var(--line, #d5dbe1); background: transparent; border-radius: 12px; padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer; color: inherit; }
+.nkout .crow input.out { font-variant-numeric: tabular-nums; }
+.nkplot { width: 100%; height: auto; display: block; margin: 6px 0; touch-action: none; }
+.nkplot .nkn { stroke: #1D5A8A; stroke-width: 1.6; }
+.nkplot .nkk { stroke: #B4532C; stroke-width: 1.6; stroke-dasharray: 4 2; }
+.nkplot .nknt { fill: #1D5A8A; font-size: 9px; }
+.nkplot .nkkt { fill: #B4532C; font-size: 9px; }
+.nkplot .nkax { stroke: #9aa5b1; stroke-width: 1; }
+.nkplot .nkaxt { fill: #6b7785; font-size: 9px; }
+.nkplot .nkmark { stroke: #16191D; stroke-width: 1; stroke-dasharray: 2 2; }
+.nkrefs { margin-top: 8px; font-size: 12px; }
+.nkreftxt { white-space: pre-line; color: var(--muted, #5b6672); }
+.nklinks, .nkfoot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.nkwrap .crow { grid-template-columns: minmax(0, 1fr) 128px 42px; }

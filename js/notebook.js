@@ -432,7 +432,11 @@ export async function rasterPage(doc, page, anns, opts = {}) {
   ctx.scale(k, k); ctx.translate(-bb[0], -bb[1]);
   if (opts.template) { if (page.tpl === 'cover') drawCover(ctx, page, doc); else drawTemplate(ctx, page); }
   for (const a of items.filter(x => x.kind === 'img')) {
-    try { const img = await loadImg(await fileUrl(a.fileId)); ctx.drawImage(img, a.x, a.y, a.w, a.h); } catch (e) {}
+    try {
+      const img = await loadImg(await fileUrl(a.fileId));
+      if (a.rot) { ctx.save(); ctx.translate(a.x + a.w / 2, a.y + a.h / 2); ctx.rotate(a.rot * Math.PI / 180); ctx.drawImage(img, -a.w / 2, -a.h / 2, a.w, a.h); ctx.restore(); }
+      else ctx.drawImage(img, a.x, a.y, a.w, a.h);
+    } catch (e) {}
   }
   for (const a of items.filter(x => x.kind === 'ink')) {
     ctx.save();
@@ -508,7 +512,7 @@ export async function rasterBox(html, w, k = 3) {
 
 // ---------- exportar caderno em PDF ----------
 export async function notebookPdf(doc) {
-  const { PDFDocument, rgb, LineCapStyle, BlendMode, StandardFonts } = await import('../vendor/pdf-lib.esm.min.js');
+  const { PDFDocument, rgb, LineCapStyle, BlendMode, StandardFonts, degrees } = await import('../vendor/pdf-lib.esm.min.js');
   const pdf = await PDFDocument.create();
   pdf.setTitle(doc.name); pdf.setCreator('Leitor de Pesquisa');
   const anns = await S.annots(doc.id);
@@ -536,7 +540,12 @@ export async function notebookPdf(doc) {
         if (/png/.test(b.type)) im = await pdf.embedPng(bytes);
         else if (/jpe?g/.test(b.type)) im = await pdf.embedJpg(bytes);
         else { const c = document.createElement('canvas'); const i = await loadImg(await fileUrl(a.fileId)); c.width = i.naturalWidth; c.height = i.naturalHeight; c.getContext('2d').drawImage(i, 0, 0); bytes = new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer()); im = await pdf.embedPng(bytes); }
-        page.drawImage(im, { x: a.x, y: H - a.y - a.h, width: a.w, height: a.h });
+        if (a.rot) {
+          // pdf-lib gira em torno do canto de baixo à esquerda (sentido anti-horário)
+          const phi = -a.rot * Math.PI / 180, cx = a.x + a.w / 2, cy = H - a.y - a.h / 2;
+          const bx = cx + (-a.w / 2) * Math.cos(phi) - (-a.h / 2) * Math.sin(phi), by = cy + (-a.w / 2) * Math.sin(phi) + (-a.h / 2) * Math.cos(phi);
+          page.drawImage(im, { x: bx, y: by, width: a.w, height: a.h, rotate: degrees(-a.rot) });
+        } else page.drawImage(im, { x: a.x, y: H - a.y - a.h, width: a.w, height: a.h });
       } catch (e) { console.warn('imagem', e); }
     }
     for (const a of readingOrder(doc, mine.filter(x => x.kind === 'tbox'))) {

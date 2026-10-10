@@ -4,7 +4,7 @@ import { PDFDocument, PDFName, PDFString, PDFHexString, PDFArray, PDFDict, PDFRa
 import { openPdf, getPage, pageList, pdfjs, embeddedData, pageLabel } from './pdfdoc.js';
 import * as S from './store.js';
 import { catInfo, uid } from './util.js';
-import { strokeWidth } from './viewer.js';
+import { strokeWidth, imgCorners } from './viewer.js';
 import { audioExt } from './audio.js';
 import { extractForeign } from './adobe.js';
 
@@ -76,14 +76,14 @@ export async function exportPdf(doc, opts) {
 
   const flat = opts.mode === 'flat';
   const author = PDFHexString.fromText('Leitor de Pesquisa');
-  const audioNames = {};
+  const audioNames = {}, imgNames = {};
 
   for (const p of list) {
     const pg = pages[pageOf.get(p.key)];
     const conv = await makeConverter(hd, p);
     const mine = anns.filter(a => a.pageKey === p.key);
     let flatOps = '';
-    const gs = {};
+    const gs = {}, xo = {};
     const gsName = (ca, bm) => { const k = 'G' + Math.round(ca * 100) + (bm ? 'M' : ''); gs[k] = { ca, CA: ca, BM: bm ? 'Multiply' : 'Normal' }; return k; };
 
     for (const a of mine) {
@@ -164,6 +164,27 @@ export async function exportPdf(doc, opts) {
         }
         if (a.audioId && opts.audio) await addAudioAnnot(pdfDoc, pg, a, a.text ? [X + 12, Y] : [X, Y], audioNames, true);
       }
+      if (a.kind === 'img' && opts.ink) {
+        // figura (forma de campo, imagem colada): vai como imagem; no modo editável, como carimbo (Stamp)
+        const im = await embedImage(pdfDoc, a.fileId);
+        if (im) {
+          const corners = imgCorners(a);   // [TL, TR, BR, BL] na tela
+          const P0 = conv(...corners[3]), P1 = conv(...corners[2]), P2 = conv(...corners[0]);
+          const nm = 'Im' + Object.keys(xo).length;
+          const ops = `q ${f(P1[0] - P0[0])} ${f(P1[1] - P0[1])} ${f(P2[0] - P0[0])} ${f(P2[1] - P0[1])} ${f(P0[0])} ${f(P0[1])} cm /${nm} Do Q`;
+          if (flat) { xo[nm] = im.ref; flatOps += ops + '\n'; }
+          else {
+            const rect = bounds(corners.map(c => conv(...c)), 0);
+            const ap = ctx.register(ctx.stream(ops, { Type: 'XObject', Subtype: 'Form', BBox: rect, Resources: { XObject: { [nm]: im.ref } } }));
+            const annot = ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: rect, F: 4, Name: 'Imagem', AP: { N: ap } });
+            annot.set(PDFName.of('T'), author);
+            annot.set(PDFName.of('NM'), PDFString.of(NM + a.id));
+            pg.node.addAnnot(ctx.register(annot));
+            const b = await S.audioBlob(a.fileId);
+            if (b) { const fname = 'imagem-' + a.id + '.' + ((b.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/g, '')); imgNames[a.id] = fname; await pdfDoc.attach(new Uint8Array(await b.arrayBuffer()), fname, { mimeType: b.type || 'image/png', description: 'Imagem do Leitor de Pesquisa' }); }
+          }
+        }
+      }
       if (a.kind === 'link' && opts.links) {
         const t = a.target || {};
         const quads = a.rects.map(([x, y, w, hh]) => [conv(x, y), conv(x + w, y), conv(x, y + hh), conv(x + w, y + hh)]);
@@ -194,7 +215,7 @@ export async function exportPdf(doc, opts) {
         flatOps += 'q ' + ops + ' Q\n';
       }
     }
-    if (flatOps) addFlatOps(pdfDoc, pg, flatOps, gs);
+    if (flatOps) addFlatOps(pdfDoc, pg, flatOps, gs, xo);
   }
 
   // 3) dados escondidos para reabrir tudo editável no app (só no modo editável)
@@ -204,8 +225,8 @@ export async function exportPdf(doc, opts) {
       app: 'leitor-pesquisa', v: 1, exported: Date.now(),
       doc: { id: doc.id, name: doc.name, meta: doc.meta, bookmarks: doc.bookmarks, blanks: doc.blanks, margins: doc.margins, briefing: doc.briefing },
       pages: list.map(p => ({ key: p.key, kind: p.kind })), origBoxes,
-      annots: anns.filter(a => (a.kind === 'hl' && opts.hl) || (a.kind === 'ink' && opts.ink) || (a.kind === 'note' && opts.notes) || (a.kind === 'link' && opts.links)),
-      audioNames, digest: dg.items.filter(it => it.src.doc === doc.id),
+      annots: anns.filter(a => (a.kind === 'hl' && opts.hl) || (a.kind === 'ink' && opts.ink) || (a.kind === 'img' && opts.ink && imgNames[a.id]) || (a.kind === 'note' && opts.notes) || (a.kind === 'link' && opts.links)),
+      audioNames, imgNames, digest: dg.items.filter(it => it.src.doc === doc.id),
     };
     await pdfDoc.attach(new TextEncoder().encode(JSON.stringify(data)), DATA_NAME, { mimeType: 'application/json', description: 'Anotações editáveis do Leitor de Pesquisa', creationDate: new Date(), modificationDate: new Date() });
   }
@@ -222,10 +243,11 @@ function formXObject(ctx, rect, ops, extg) {
   return ctx.register(st);
 }
 
-function addFlatOps(pdfDoc, pg, ops, gs) {
+function addFlatOps(pdfDoc, pg, ops, gs, imgs) {
   const ctx = pdfDoc.context;
   const mb = pg.getMediaBox();
   const res = { ExtGState: {} };
+  if (imgs && Object.keys(imgs).length) res.XObject = imgs;
   for (const k in gs) res.ExtGState[k] = { Type: 'ExtGState', ca: gs[k].ca, CA: gs[k].CA, BM: gs[k].BM };
   const xo = ctx.register(ctx.stream(ops, { Type: 'XObject', Subtype: 'Form', BBox: [mb.x - 2000, mb.y - 2000, mb.x + mb.width + 2000, mb.y + mb.height + 2000], Resources: res }));
   const name = pg.node.newXObject('Lt', xo);
@@ -309,7 +331,7 @@ export async function importPdfBytes(name, bytes) {
   }
   const audioFiles = {};
   if (attachments) for (const k in attachments) { const at = attachments[k]; if (at && at.filename) audioFiles[at.filename] = at.content; }
-  const audioNamesSet = new Set(Object.values(data.audioNames || {}));
+  const audioNamesSet = new Set(Object.values(data.audioNames || {}).concat(Object.values(data.imgNames || {})));
   const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
   const ctx = pdfDoc.context;
   const audio = {};
@@ -380,6 +402,13 @@ export async function importPdfBytes(name, bytes) {
       if ((!au || !au.bytes) && fn && audioFiles[fn]) au = { bytes: audioFiles[fn], type: audioType(fn) };
       na.audioId = au && au.bytes ? await S.saveAudio(new Blob([au.bytes], { type: au.type })) : undefined;
     }
+    if (a.kind === 'img') {
+      const fn = data.imgNames && data.imgNames[a.id];
+      if (!fn || !audioFiles[fn]) continue;
+      const ext = fn.split('.').pop();
+      const { storeImage } = await import('./notebook.js');
+      try { na.fileId = (await storeImage(new Blob([audioFiles[fn]], { type: ext === 'jpg' ? 'image/jpeg' : 'image/' + ext }))).fileId; } catch (e) { continue; }
+    }
     if (na.target && na.target.docId === d.id) na.target.docId = doc.id;
     await S.putAnnot(na, { noUndo: true });
   }
@@ -394,6 +423,23 @@ export async function importPdfBytes(name, bytes) {
   doc.restored = (data.annots || []).length;
   if (fr) { await putForeign(doc, fr.annots); doc.adobe = fr.count; }
   return doc;
+}
+
+async function embedImage(pdfDoc, fileId) {
+  try {
+    const b = await S.audioBlob(fileId);
+    if (!b) return null;
+    let bytes = new Uint8Array(await b.arrayBuffer());
+    if (/png/.test(b.type)) return await pdfDoc.embedPng(bytes);
+    if (/jpe?g/.test(b.type)) return await pdfDoc.embedJpg(bytes);
+    const u = URL.createObjectURL(b);
+    try {
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = u; });
+      const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext('2d').drawImage(img, 0, 0);
+      bytes = new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer());
+      return await pdfDoc.embedPng(bytes);
+    } finally { URL.revokeObjectURL(u); }
+  } catch (e) { console.warn('imagem no PDF', e); return null; }
 }
 
 function audioType(fn) {

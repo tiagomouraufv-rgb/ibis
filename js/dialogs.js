@@ -475,7 +475,13 @@ function guideNodes() {
         'O título e o resumo que ocupam a largura toda da 1ª página aparecem antes das colunas, numa faixa própria.',
         '⋯ > “Ajustar colunas do modo artigo…”: escolha 1, 2 ou 3 colunas, arraste as bordas do corte e a linha da divisão sobre a página e toque em Aplicar. “Automático” volta para a detecção do app. Fica guardado em cada documento.',
         'É o próprio PDF recortado (não é refeito): destaques, escrita, notas, links e seleção de texto funcionam normalmente.',
+        'Margem para escrever (como na página inteira): toque no botão de margem da barra (ou ⋯ da página > “Abrir margem expandida”). Cada coluna ganha uma faixa pautada ao lado. O que você escreve ali fica na margem da página: aparece também quando você sai do modo artigo.',
         'Na tela dividida continua valendo o corte das bordas brancas.')),
+    sec('Índice de refração (refractiveindex.info)',
+      ul('Três jeitos de abrir: selecione o nome do material no texto e toque em “Índice n,k”; aperte Alt+N no teclado (DeX, computador); ou escolha “Índice de refração dos materiais” na Calculadora física.',
+        'Busque pelo nome em português ou inglês, ou pela fórmula (Si, Ge, SiO2, água, ouro, MEH-PPV…). Escolha o material e o conjunto de dados (artigo e faixa de λ).',
+        'Digite o λ (ou toque num laser: 405, 532, 633, 785, 1064…, ou no gráfico) e veja n, k, ε₁, ε₂, absorção α, profundidade de penetração, reflexão normal, índice de grupo e λ no material.',
+        'Os dados vêm do banco público do refractiveindex.info (no GitHub) e ficam guardados no aparelho depois da primeira vez. “Abrir no refractiveindex.info” abre a página completa do site no navegador.')),
     sec('Desfazer e refazer',
       ul('Os botões ↶ ↷ (e Ctrl+Z, Ctrl+Shift+Z ou Ctrl+Y no teclado) desfazem passo a passo tudo o que você mudou no documento: traços, destaques, notas, caixas de texto, imagens, formas, páginas inseridas ou apagadas, margens, marcadores e o texto.',
         'Cada documento tem a sua própria lista (desfazer num não mexe no outro). A lista vale enquanto o app está aberto.')),
@@ -485,6 +491,7 @@ function guideNodes() {
     sec('Formas e calculadora física (painel da direita)',
       ul('Na barra da esquerda, “Formas” abre o painel da direita. No alto, escolha o tipo: geométricas, perfis de feixe (1D), campos de feixe (2D), componentes ópticos, mecânica quântica, eletromagnetismo e física médica.',
         'Toque numa forma e arraste um retângulo na página. Formas de traço (círculo, esfera, perfil gaussiano, LG, Bessel…) viram traços que você pode apagar e recolorir; campos 2D (gaussiano, LG, HG, Bessel, Airy, vórtice…) entram como imagem.',
+        'Depois de desenhada, a forma fica selecionada: arraste por dentro para mover, o quadradinho do canto muda o tamanho (proporcional) e a bolinha em cima gira (encaixa em 0°, 45°, 90°…). Para mexer depois: ferramenta Laço, toque num traço da forma (pega a forma inteira) ou contorne. No menu da seleção: Girar 90°, Espelhar, Duplicar, cor, Apagar.',
         '“Calculadora” abre o mesmo painel com a calculadora física. No alto, escolha: luz e espectro (nm, cm⁻¹, eV, THz…), Raman, feixe gaussiano, foco, pinças ópticas, física médica (dose, dose equivalente, atividade, decaimento, atenuação, inverso do quadrado, raios X), unidades e constantes. Digite em qualquer campo que os outros acompanham.',
         'Constantes: CODATA 2018. Física médica: fatores de peso da radiação da ICRP 103 e meias-vidas tabeladas. Confira valores críticos numa fonte oficial antes de usar em prova ou trabalho.')),
     sec('Compartilhar e favoritos',
@@ -645,7 +652,7 @@ function guideNodes() {
 async function backup() {
   toast('Gerando a cópia de segurança…');
   const files = {};
-  for (const store of ['docs', 'annots', 'projects', 'recordings', 'kv']) files[store + '.json'] = strToU8(JSON.stringify(await db.all(store)));
+  for (const store of ['docs', 'annots', 'projects', 'recordings', 'kv']) files[store + '.json'] = strToU8(JSON.stringify((await db.all(store)).filter(r => store !== 'kv' || !String(r.k).startsWith('nk:'))));   // sem o cache do refractiveindex
   for (const f of await db.all('files')) files['files/' + f.id] = new Uint8Array(await f.blob.arrayBuffer());
   const types = {}; for (const f of await db.all('files')) types[f.id] = f.blob.type;
   files['types.json'] = strToU8(JSON.stringify(types));
