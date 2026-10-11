@@ -32,7 +32,9 @@ function bounds(pts, pad = 0) {
 }
 
 /**
- * opts: { mode: 'editable'|'flat', hl, ink, notes, audio, links }
+ * opts: { mode: 'editable'|'flat', hl, ink, notes, audio, links, rm }
+ * rm: versão para o reMarkable (achatada; as notas digitadas e o Digest vão num pacote escondido que o
+ *     RM2 Notas lê; destaque com nota sai destacado E sublinhado). opts.rmOut recebe { notes, digest }.
  * retorna Uint8Array
  */
 export async function exportPdf(doc, opts) {
@@ -74,7 +76,8 @@ export async function exportPdf(doc, opts) {
     addFlatOps(pdfDoc, pg, sep, {});
   }
 
-  const flat = opts.mode === 'flat';
+  const flat = opts.mode === 'flat' || !!opts.rm;
+  const rmNotes = [];
   const author = PDFHexString.fromText('Leitor de Pesquisa');
   const audioNames = {}, imgNames = {};
 
@@ -92,6 +95,13 @@ export async function exportPdf(doc, opts) {
         const col = rgb(a.color || ci.color);
         const quads = a.rects.map(([x, y, w, hh]) => [conv(x, y), conv(x + w, y), conv(x, y + hh), conv(x + w, y + hh)]);
         let ops = '';
+        if (opts.rm && a.note && a.style !== 'underline' && a.style !== 'strike') {
+          // reMarkable: destaque com nota = destacado + sublinhado (a nota vai para a margem)
+          const c = col.map(v => v * 0.55);
+          ops += `${c.map(f).join(' ')} RG `;
+          for (const [x, y, w, hh] of a.rects) { const p1 = conv(x, y + hh), p2 = conv(x + w, y + hh); ops += `${f(Math.max(0.8, hh * 0.08))} w ${f(p1[0])} ${f(p1[1])} m ${f(p2[0])} ${f(p2[1])} l S `; }
+        }
+        if (opts.rm && a.note) rmNotes.push({ ext: a.id, page: pageOf.get(p.key), kind: 'hl', x: a.rects[0][0], y: a.rects[0][1] + a.rects[0][3] / 2, text: a.note, quote: a.text || '', cat: a.cat || '', updated: String(a.updated || a.created || '') });
         if (a.style === 'underline' || a.style === 'strike') {
           const c = a.style === 'strike' ? rgb('#B4232C') : col.map(v => v * 0.55);
           ops += `${c.map(f).join(' ')} RG `;
@@ -151,6 +161,7 @@ export async function exportPdf(doc, opts) {
           pg.node.addAnnot(ctx.register(annot));
         }
       }
+      if (a.kind === 'note' && opts.rm && a.text) rmNotes.push({ ext: a.id, page: pageOf.get(p.key), kind: 'sticky', x: a.x, y: a.y, text: a.text, quote: '', cat: '', updated: String(a.updated || a.created || '') });
       if (a.kind === 'note' && opts.notes) {
         const [X, Y] = conv(a.x, a.y);
         if (a.text) {
@@ -197,7 +208,10 @@ export async function exportPdf(doc, opts) {
           action = ctx.obj({ S: 'GoTo', D: [pages[pageOf.get(t.pageKey)].ref, 'XYZ', null, top, null] });
         } else if (t.type === 'url') action = ctx.obj({ S: 'URI', URI: PDFString.of(t.url) });
         else if (t.type === 'obsidian' && t.uri) action = ctx.obj({ S: 'URI', URI: PDFString.of(t.uri) });
-        if (action) {
+        if (!action && opts.rm) {
+          // no reMarkable, ligação para outro documento ou para o Digest vira nota na margem
+          rmNotes.push({ ext: a.id, page: pageOf.get(p.key), kind: 'link', x: a.rects[0][0], y: a.rects[0][1] + a.rects[0][3] / 2, text: 'Ligação: ' + (a.targetLabel || 'outro documento'), quote: a.text || '', cat: '', updated: String(a.updated || a.created || '') });
+        } else if (action) {
           const annot = ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: rect, Border: [0, 0, 0], F: 4, A: action });
           annot.set(PDFName.of('NM'), PDFString.of(NM + a.id));
           pg.node.addAnnot(ctx.register(annot));
@@ -218,6 +232,19 @@ export async function exportPdf(doc, opts) {
     if (flatOps) addFlatOps(pdfDoc, pg, flatOps, gs, xo);
   }
 
+  // 3a) reMarkable: pacote com as notas digitadas e o Digest deste documento, para o RM2 Notas
+  if (opts.rm) {
+    const dg = await S.digest();
+    const idxOf = (key, n) => pageOf.has(key) ? pageOf.get(key) : (n > 0 ? n - 1 : -1);
+    const digest = dg.items.filter(it => it.src.doc === doc.id).map(it => ({
+      ext: it.id, pdfPage: idxOf(it.pageKey, it.page), pdfPageEnd: it.pageKeyEnd ? idxOf(it.pageKeyEnd, it.pageEnd) : (it.pageEnd ? it.pageEnd - 1 : -1),
+      quote: it.quote, note: it.note, tags: it.tags, area: it.area, created: it.created, updated: it.updated }));
+    const sizes = list.map(p => { const pg = pages[pageOf.get(p.key)]; const cb = pg.getCropBox(); const r = pg.getRotation().angle % 180 !== 0; return { w: r ? cb.height : cb.width, h: r ? cb.width : cb.height }; });
+    const pkg = { app: 'leitor-pesquisa', kind: 'rm', v: 1, exported: Date.now(), doc: { id: doc.id, name: doc.name }, pages: sizes, notes: rmNotes, digest };
+    embedRmPackage(pdfDoc, pkg);
+    if (opts.rmOut) { opts.rmOut.notes = rmNotes.length; opts.rmOut.digest = digest.length; }
+  }
+
   // 3) dados escondidos para reabrir tudo editável no app (só no modo editável)
   if (!flat) {
     const dg = await S.digest();
@@ -231,6 +258,19 @@ export async function exportPdf(doc, opts) {
     await pdfDoc.attach(new TextEncoder().encode(JSON.stringify(data)), DATA_NAME, { mimeType: 'application/json', description: 'Anotações editáveis do Leitor de Pesquisa', creationDate: new Date(), modificationDate: new Date() });
   }
   return pdfDoc.save({ useObjectStreams: true });
+}
+
+// Pacote para o reMarkable: JSON só com ASCII (o "%" também escapado, para o marcador não aparecer dentro),
+// entre dois marcadores, num stream SEM compressão — o RM2 Notas lê o PDF como texto e procura os marcadores.
+export const RM_BEGIN = '%%LEITOR-RM-PKG-BEGIN%%', RM_END = '%%LEITOR-RM-PKG-END%%';
+export function rmPackageText(pkg) {
+  const js = JSON.stringify(pkg).replace(/[\u007f-\uffff%]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+  return RM_BEGIN + js + RM_END;
+}
+export function embedRmPackage(pdfDoc, pkg) {
+  const ctx = pdfDoc.context;
+  const ref = ctx.register(ctx.stream(rmPackageText(pkg), { Type: 'LeitorRM' }));
+  pdfDoc.catalog.set(PDFName.of('LeitorRM'), ref);
 }
 
 function formXObject(ctx, rect, ops, extg) {

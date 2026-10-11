@@ -52,7 +52,9 @@ export async function openExportDialog(doc) {
     h('div.flabel', 'INCLUIR'), Object.values(c).map(x => x.el),
     h('label.field', h('span', 'Nome do arquivo'), nameIn),
     h('p.muted', 'O original fica intacto. Para salvar no Google Drive ou no OneDrive, use “Compartilhar” e escolha o app.'),
+    h('p.muted', 'Para o reMarkable, use “Enviar ao reMarkable”: as notas e o Digest vão escondidos no PDF e o RM2 Notas os coloca no leitor de lá.'),
     status), [
+    { label: 'Enviar ao reMarkable', onclick: async () => (await import('./remarkable.js')).sendToRemarkable(doc) },
     { label: 'Salvar no tablet', onclick: async () => { const r = await build(); if (r) await downloadBlob(r.blob, r.name); } },
     { label: 'Compartilhar (Drive, OneDrive…)', primary: true, onclick: async () => { const r = await build(); if (r) { const ok = await shareFile(r.blob, r.name, 'application/pdf'); if (!ok) { await downloadBlob(r.blob, r.name); } } } },
   ], { wide: true });
@@ -669,7 +671,8 @@ function guideNodes() {
         'As duas janelas podem ser arrastadas pelo topo.')),
     sec('Exportar e Obsidian',
       ul('Exportar gera o PDF com as marcações: “Editável” (outras pessoas podem ver e mexer; ao reabrir no app, tudo volta editável) ou “Achatado” (aparece igual em qualquer leitor).',
-        'Enviar ao Obsidian: “Enviar esta nota” abre o app do Obsidian (informe o nome do cofre na aba Obsidian); “Pacote .zip” traz todas as notas, o Digest e os áudios para extrair no cofre.')),
+        'Enviar ao Obsidian: “Enviar esta nota” abre o app do Obsidian (informe o nome do cofre na aba Obsidian); “Pacote .zip” traz todas as notas, o Digest e os áudios para extrair no cofre.',
+        'Enviar ao reMarkable (menu ⋯ do documento na biblioteca, ou Exportar): gera um PDF para o leitor nativo do reMarkable. Destaques, escrita e figuras vão desenhados; destaque com nota sai destacado e sublinhado; links para páginas do mesmo PDF continuam funcionando. As notas digitadas e os trechos do Digest vão escondidos no PDF: com o RM2 Notas 0.9 no reMarkable, ao abrir o documento lá elas aparecem sozinhas (nota de destaque na margem, nota adesiva no mesmo ponto) e os trechos vão para o RM2 Digest 0.3. Textos viram PDF (dá para selecionar e destacar o texto no reMarkable). Escolha o app do reMarkable no menu de compartilhar.')),
     sec('Cópia de segurança',
       ul('Tudo fica guardado neste aparelho (e no seu Google Drive, se a sincronização estiver ligada). Use a aba Cópia de vez em quando para gerar um .zip extra.',
         'Para passar seus dados para outro aparelho (ou do navegador para o app Android), faça a cópia num e restaure no outro.')));

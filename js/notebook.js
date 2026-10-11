@@ -485,14 +485,14 @@ async function katexCss() {
   return css;
 }
 
-const BOX_CSS = `.r{font-family:'Source Serif 4',Georgia,serif;font-size:${TEXT_SIZE}px;line-height:1.45;color:#16191D;word-wrap:break-word}
+const BOX_CSS = `.r{display:flow-root;font-family:'Source Serif 4',Georgia,serif;font-size:${TEXT_SIZE}px;line-height:1.45;color:#16191D;word-wrap:break-word}
 .r h1{font-size:1.6em;margin:.3em 0}.r h2{font-size:1.35em;margin:.3em 0}.r h3{font-size:1.15em;margin:.3em 0}.r p{margin:.35em 0}
 .r ul,.r ol{margin:.3em 0;padding-left:1.4em}.r blockquote{margin:.4em 0;padding-left:.8em;border-left:3px solid #9AA3AD;color:#3A4048}
 .r code{font-family:monospace;background:#eef0f2;padding:0 .2em;border-radius:3px}.r mark{background:#FFE36E}
 .r li:has(> input[type=checkbox]){list-style:none;margin-left:-1.2em}.r input[type=checkbox]{width:1em;height:1em;margin:0 .35em 0 0}.r table{border-collapse:collapse}.r td,.r th{border:1px solid #c9ced4;padding:2px 6px}.r .katex-display{margin:.5em 0}`;
 
 // devolve { png: Uint8Array, h } com a caixa desenhada na largura w (pontos)
-export async function rasterBox(html, w, k = 3) {
+export async function rasterBox(html, w, k = 3, opts = {}) {
   const css = await katexCss();
   const holder = h('div', { style: { position: 'fixed', left: '-10000px', top: '0', width: w + 'px' } });
   const inner = h('div.r', { html });
@@ -500,6 +500,7 @@ export async function rasterBox(html, w, k = 3) {
   holder.append(st, inner);
   document.body.appendChild(holder);
   const hgt = Math.ceil(inner.getBoundingClientRect().height) + 4;
+  const words = opts.words ? measureWords(inner) : null;
   const xhtml = new XMLSerializer().serializeToString(inner);
   holder.remove();
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w * k}" height="${hgt * k}"><foreignObject width="${w}" height="${hgt}" transform="scale(${k})"><div xmlns="http://www.w3.org/1999/xhtml"><style>${css}\n${BOX_CSS}</style>${xhtml}</div></foreignObject></svg>`;
@@ -507,7 +508,33 @@ export async function rasterBox(html, w, k = 3) {
   const c = document.createElement('canvas'); c.width = Math.ceil(w * k); c.height = Math.ceil(hgt * k);
   c.getContext('2d').drawImage(img, 0, 0);
   const blob = await new Promise(r => c.toBlob(r, 'image/png'));
-  return { png: new Uint8Array(await blob.arrayBuffer()), h: hgt };
+  return { png: new Uint8Array(await blob.arrayBuffer()), h: hgt, words };
+}
+
+// posição de cada palavra (fora das fórmulas), relativa à caixa: serve para a camada de texto invisível do PDF
+// (para dar para selecionar, buscar e destacar o texto no reMarkable e em outros leitores)
+function measureWords(root) {
+  const base = root.getBoundingClientRect();
+  const out = [];
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: n => (n.parentElement && n.parentElement.closest('.katex, svg, style, script')) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+  const rg = document.createRange();
+  let n;
+  while ((n = tw.nextNode())) {
+    const t = n.nodeValue; if (!t || !t.trim()) continue;
+    const cs = getComputedStyle(n.parentElement);
+    const fs = parseFloat(cs.fontSize) || 14;
+    const mono = /mono|courier/i.test(cs.fontFamily);
+    const bold = (parseInt(cs.fontWeight, 10) || 400) >= 600;
+    const re = /\S+/g; let m;
+    while ((m = re.exec(t))) {
+      rg.setStart(n, m.index); rg.setEnd(n, m.index + m[0].length);
+      const rs = rg.getClientRects(); if (!rs.length) continue;
+      const r = rs[0];
+      if (r.width <= 0) continue;
+      out.push({ t: m[0], x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height, fs, mono, bold });
+    }
+  }
+  return out;
 }
 
 // ---------- exportar caderno em PDF ----------

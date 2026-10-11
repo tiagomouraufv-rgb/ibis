@@ -918,19 +918,47 @@ export async function textObsidianFiles(doc, folder = 'Textos') {
   return files;
 }
 
-// PDF: blocos desenhados em sequência numa página A4 (texto e equações viram imagem)
-export async function textPdf(doc) {
-  const { PDFDocument, rgb, StandardFonts } = await import('../vendor/pdf-lib.esm.min.js');
+// PDF: blocos desenhados em sequência numa página A4 (texto e equações viram imagem).
+// opts.rm (versão para o reMarkable): bloco maior que a página é cortado entre linhas (em vez de encolhido),
+// cada palavra ganha uma camada de texto invisível (dá para selecionar, buscar e destacar) e os trechos do
+// Digest deste texto vão num pacote escondido que o RM2 Digest recebe. opts.rmOut recebe { digest }.
+export async function textPdf(doc, opts = {}) {
+  const PL = await import('../vendor/pdf-lib.esm.min.js');
+  const { PDFDocument, rgb, StandardFonts } = PL;
+  const rm = !!opts.rm;
   const pdf = await PDFDocument.create();
   pdf.setTitle(doc.name); pdf.setCreator('Leitor de Pesquisa');
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const W = 595.28, H = 841.89, M = 56, CW = W - 2 * M;
   let page = pdf.addPage([W, H]); let y = M;
-  const need = hh => { if (y + hh > H - M && y > M) { page = pdf.addPage([W, H]); y = M; } };
+  const pagesOut = [page];
+  const newPage = () => { page = pdf.addPage([W, H]); pagesOut.push(page); y = M; };
+  const need = hh => { if (y + hh > H - M && y > M) newPage(); };
   const blocks = splitBlocks(doc.md || '');
   const num = numberAll(blocks.map((md, i) => ({ id: i, md })));
   const hs = headings(doc.md || '');
   const tocHtml = '<p><b>Sumário</b></p><ul>' + hs.map(x => '<li style="margin-left:' + (x.level - 1) * 14 + 'px;list-style:none">' + x.text.replace(/</g, '&lt;') + '</li>').join('') + '</ul>';
+  const where = [];   // por bloco: índice da página onde começa
+  const fontKeys = new Map();
+  // camada de texto invisível: cada palavra no lugar dela, esticada para a largura medida (Tz)
+  const textLayer = (pg, words, ox, oy, k) => {
+    if (!words || !words.length) return;
+    let key = fontKeys.get(pg);
+    if (!key) { key = pg.node.newFontDictionary('LtTx', font.ref); fontKeys.set(pg, key); }
+    const ops = [PL.beginText(), PL.setTextRenderingMode(PL.TextRenderingMode.Invisible)];
+    for (const wd of words) {
+      let t = wd.t.replace(/[^\x20-\x7e\xa0-\xff–—‘’“”•…]/g, '');
+      if (!t) continue;
+      let enc; try { enc = font.encodeText(t); } catch (e) { continue; }
+      const size = Math.max(2, wd.fs * k);
+      const natural = font.widthOfTextAtSize(t, size);
+      const tz = natural > 0 ? Math.max(20, Math.min(400, (wd.w * k) / natural * 100)) : 100;
+      const bx = ox + wd.x * k, by = H - (oy + (wd.y + wd.h * 0.78) * k);
+      ops.push(PL.setFontAndSize(key, size), PL.setCharacterSqueeze(tz), PL.setTextMatrix(1, 0, 0, 1, bx, by), PL.showText(enc));
+    }
+    ops.push(PL.endText());
+    pg.pushOperators(...ops);
+  };
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i].trim();
     const im = b.match(/^!\[[^\]]*?(?:\|(\d+))?\]\(img:([\w-]+)\)$/);
@@ -946,28 +974,71 @@ export async function textPdf(doc) {
         let w = Math.min(CW, im[1] ? +im[1] * 0.75 : img.width * 0.75), hh = w * img.height / img.width;
         if (hh > H - 2 * M) { hh = H - 2 * M; w = hh * img.width / img.height; }
         need(hh + 10);
+        where[i] = pagesOut.length - 1;
         page.drawImage(img, { x: M + (CW - w) / 2, y: H - y - hh, width: w, height: hh });
         y += hh + 12;
         continue;
       }
       let html;
-      if (au) { html = '<p>🎙 ' + (au[1] || 'Nota de voz') + ' <i>(áudio anexado a este PDF)</i></p>'; const blob = await S.audioBlob(au[2]); if (blob) await pdf.attach(new Uint8Array(await blob.arrayBuffer()), 'audio-' + au[2] + '.webm', { mimeType: blob.type || 'audio/webm', description: au[1] || 'Nota de voz' }); }
+      if (au) { html = '<p>🎙 ' + (au[1] || 'Nota de voz') + ' <i>(áudio anexado a este PDF)</i></p>'; const blob = await S.audioBlob(au[2]); if (blob && !rm) await pdf.attach(new Uint8Array(await blob.arrayBuffer()), 'audio-' + au[2] + '.webm', { mimeType: blob.type || 'audio/webm', description: au[1] || 'Nota de voz' }); }
       else if (yt) html = '<p>▶ Vídeo do YouTube: https://youtu.be/' + yt.id + (yt.t ? '?t=' + yt.t : '') + '</p>';
       else if (/^\[\[(sumario|sumário|toc)\]\]$/i.test(b)) html = tocHtml;
       else html = renderMarkdown(b, num.starts[i] || 0, num.labels);
-      const r = await NB.rasterBox(html, CW);
-      let hh = r.h, w = CW;
-      if (hh > H - 2 * M) { const k = (H - 2 * M) / hh; hh *= k; w *= k; }
-      need(hh);
+      const r = await NB.rasterBox(html, CW, 3, { words: rm });
       const png = await pdf.embedPng(r.png);
-      page.drawImage(png, { x: M, y: H - y - hh, width: w, height: hh });
-      y += hh + 4;
+      let hh = r.h, w = CW;
+      if (!rm || hh <= H - 2 * M) {
+        if (hh > H - 2 * M) { const k = (H - 2 * M) / hh; hh *= k; w *= k; }
+        need(hh);
+        where[i] = pagesOut.length - 1;
+        page.drawImage(png, { x: M, y: H - y - hh, width: w, height: hh });
+        if (rm) textLayer(page, r.words, M, y, w / CW);
+        y += hh + 4;
+        continue;
+      }
+      // bloco maior que a página (versão reMarkable): corta entre linhas e continua na página seguinte
+      if (H - M - y < 90) newPage();
+      where[i] = pagesOut.length - 1;
+      const bottoms = [...new Set((r.words || []).map(wd => Math.round(wd.y + wd.h + 1)))].sort((a, b2) => a - b2);
+      let o = 0;
+      while (o < hh - 0.5) {
+        const avail = H - M - y;
+        let c = hh;
+        if (hh - o > avail) {
+          const cands = bottoms.filter(v => v > o + 30 && v <= o + avail);
+          c = cands.length ? cands[cands.length - 1] : o + avail;
+        }
+        page.pushOperators(PL.pushGraphicsState(), PL.rectangle(M - 2, H - y - (c - o), CW + 4, c - o), PL.clip(), PL.endPath());
+        page.drawImage(png, { x: M, y: H - (y - o) - hh, width: CW, height: hh });
+        page.pushOperators(PL.popGraphicsState());
+        textLayer(page, (r.words || []).filter(wd => wd.y >= o - 1 && wd.y + wd.h <= c + 1).map(wd => Object.assign({}, wd, { y: wd.y - o })), M, y, 1);
+        y += c - o + 4;
+        o = c;
+        if (o < hh - 0.5) newPage();
+      }
     } catch (e) {
       console.warn('bloco', e);
       need(16);
+      where[i] = pagesOut.length - 1;
       page.drawText(plainText(b).slice(0, 500), { x: M, y: H - y - 12, size: 10, font, maxWidth: CW, lineHeight: 13, color: rgb(0.1, 0.1, 0.1) });
       y += 30;
     }
+  }
+  if (rm) {
+    // Digest: o trecho é procurado no texto de cada bloco para saber em que página do PDF ele ficou
+    const { embedRmPackage } = await import('./export.js');
+    const norm = t => plainText(String(t || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+    const texts = blocks.map(b => norm(b));
+    const pageFor = it => {
+      const q = norm(it.quote).slice(0, 60);
+      if (q.length >= 6) { const k = texts.findIndex(t => t.includes(q)); if (k >= 0 && where[k] !== undefined) return where[k]; }
+      if (it.pageKey && it.pageKey !== 'top') { const hd = hs.find(x => x.id === it.pageKey); if (hd) { const k = blocks.findIndex(bb => /^#{1,6}\s/.test(bb.trim()) && norm(bb).includes(norm(hd.text))); if (k >= 0 && where[k] !== undefined) return where[k]; } }
+      return 0;
+    };
+    const dg = await S.digest();
+    const digest = dg.items.filter(it => it.src.doc === doc.id).map(it => ({ ext: it.id, pdfPage: pageFor(it), pdfPageEnd: -1, quote: it.quote, note: it.note, tags: it.tags, area: it.area, created: it.created, updated: it.updated }));
+    embedRmPackage(pdf, { app: 'leitor-pesquisa', kind: 'rm', v: 1, exported: Date.now(), doc: { id: doc.id, name: doc.name, text: true }, pages: pagesOut.map(() => ({ w: W, h: H })), notes: [], digest });
+    if (opts.rmOut) { opts.rmOut.notes = 0; opts.rmOut.digest = digest.length; opts.rmOut.pages = pagesOut.length; }
   }
   return pdf.save();
 }
@@ -981,5 +1052,6 @@ export function openTextExport(doc) {
       h('button.pbtn', { type: 'button', onclick: async () => { toast('Gerando…'); const { zipSync } = await import('../vendor/fflate.js'); downloadBlob(new Blob([zipSync(await textObsidianFiles(doc))], { type: 'application/zip' }), name + '-Obsidian.zip'); } }, 'Pacote Obsidian (.zip)'),
       h('button.sbtn', { type: 'button', onclick: async () => { const md = await obsidianMd(doc, null, 'Textos'); downloadBlob(new Blob([md], { type: 'text/markdown' }), name + '.md'); } }, 'Só o arquivo .md'),
       h('button.sbtn', { type: 'button', onclick: async () => { toast('Gerando o PDF…', 8000); downloadBlob(new Blob([await textPdf(doc)], { type: 'application/pdf' }), name + '.pdf'); } }, 'Salvar PDF'),
-      h('button.sbtn', { type: 'button', onclick: async () => { toast('Gerando o PDF…', 8000); shareFile(new Blob([await textPdf(doc)], { type: 'application/pdf' }), name + '.pdf'); } }, 'Compartilhar PDF'))), [{ label: 'Fechar' }]);
+      h('button.sbtn', { type: 'button', onclick: async () => { toast('Gerando o PDF…', 8000); shareFile(new Blob([await textPdf(doc)], { type: 'application/pdf' }), name + '.pdf'); } }, 'Compartilhar PDF'),
+      h('button.sbtn', { type: 'button', onclick: async () => (await import('./remarkable.js')).sendToRemarkable(doc) }, 'Enviar ao reMarkable'))), [{ label: 'Fechar' }]);
 }

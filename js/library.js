@@ -412,6 +412,7 @@ export class Library {
       this.view.startsWith('projeto:') ? { icon: 'folder', label: 'Mover para pasta…', onclick: async () => { const pid = this.view.slice(8); const proj = (await S.projects()).find(p => p.id === pid); if (proj) this.pickFolder(proj, 'Mover “' + S.docTitle(d) + '” para', null, f => this.moveDoc(d.id, pid, f)); } } : null,
       d.kind === 'text' ? { icon: 'upload', label: 'Exportar texto (Markdown / Obsidian / PDF)', onclick: () => TX.openTextExport(d) } : d.kind === 'notebook' ? { icon: 'upload', label: 'Exportar caderno (PDF / Obsidian)', onclick: () => openNotebookExport(d) } : { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },
       d.kind ? null : { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
+      d.kind === 'notebook' ? null : { icon: 'upload', label: 'Enviar ao reMarkable', onclick: async () => (await import('./remarkable.js')).sendToRemarkable(d) },
       d.kind === 'notebook' ? { icon: 'notebook', label: 'Capa…', onclick: () => this.app.reader.coverMenu(d, x - 220, y, () => this.renderMain()) } : null,
       { icon: 'ai', label: 'Resumo das anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
       d.kind ? null : { icon: 'ai', label: 'Resumo por capítulo/seção (IA)', onclick: async () => { const { openSectionBriefing } = await import('./dialogs.js'); openSectionBriefing(d); } },
