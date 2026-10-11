@@ -95,7 +95,7 @@ export class Viewer {
   destroy() { this.offAnn(); this.offLinks && this.offLinks(); this.offForm && this.offForm(); this.io.disconnect(); this.ro.disconnect(); this.el.remove(); }
 
   async open(doc, at) {
-    this.cropBox = null;
+    this.cropBox = null; this.nbCrop = null; this.fitOn = false; this.tight = false;
     this.colMode = false; this.colLayout = null;
     this.doc = doc;
     this.clearSelection();
@@ -137,6 +137,12 @@ export class Viewer {
     this.fitOn = on;
     const k = this.currentKey(), off = this.currentOffset();
     if (!this.isNb && this.hd && !this.colMode) await this.setCrop(on);
+    // caderno: corta as laterais pela área já escrita (com folga), igual em todas as páginas
+    if (this.isNb) {
+      this.nbCrop = on ? this.nbContentBox() : null;
+      // a capa não é cortada: fica do mesmo tamanho das páginas cortadas
+      for (const p of this.pages) if (p.tpl === 'cover') p.fit = this.nbCrop ? this.nbCrop[2] : undefined;
+    }
     this.zoom = 1;
     this.tight = on;   // sem a folga dos lados
     this.scale = this.fitScale();
@@ -146,6 +152,21 @@ export class Viewer {
     requestAnimationFrame(() => this.goTo(k, off, { noHist: true, exact: true }));
     this.app.onZoom && this.app.onZoom(this);
     return on;
+  }
+
+  nbContentBox() {
+    const pw = Math.max(...this.pages.map(p => p.w || 0), 1);
+    let x0 = Infinity, x1 = -Infinity;
+    for (const a of this.anns || []) {
+      if (a.kind === 'ink') for (const q of a.pts) { x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); }
+      else if (a.kind === 'img') for (const [x] of imgCorners(a)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); }
+      else if (a.kind === 'tbox') { x0 = Math.min(x0, a.x); x1 = Math.max(x1, a.x + a.w); }
+      else if (a.kind === 'note') { x0 = Math.min(x0, a.x - 10); x1 = Math.max(x1, a.x + 10); }
+    }
+    if (!(x1 > x0)) { x0 = pw * 0.06; x1 = pw * 0.94; }   // caderno vazio: só as margens
+    x0 = Math.max(0, x0 - 24); x1 = Math.min(pw, x1 + 24);
+    if (x1 - x0 < pw * 0.4) { const c = (x0 + x1) / 2; x0 = Math.max(0, c - pw * 0.2); x1 = Math.min(pw, x0 + pw * 0.4); }
+    return [x0 / pw, 0, (x1 - x0) / pw, 1];
   }
 
   // reconstrói a lista (depois de inserir/remover página em branco)
@@ -208,7 +229,7 @@ export class Viewer {
 
   fitScale() {
     const anyMargin = this.doc && this.doc.margins && Object.keys(this.doc.margins).some(k => this.doc.margins[k]);
-    const maxW = Math.max(...this.pages.map(p => (p.w * (p.box ? p.box[2] : this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : 1) + this.amOf(p).w) * (p.fit || 1)), 1) * (anyMargin && !this.colMode ? 1 + MARGIN_FRAC : 1);
+    const maxW = Math.max(...this.pages.map(p => (p.w * (p.box ? p.box[2] : this.cropBox && p.kind === 'pdf' ? this.cropBox[2] : this.nbCrop && p.kind === 'nb' && p.tpl !== 'cover' ? this.nbCrop[2] : 1) + this.amOf(p).w) * (p.fit || 1)), 1) * (anyMargin && !this.colMode ? 1 + MARGIN_FRAC : 1);
     const avail = Math.max(200, this.scroller.clientWidth - (this.tight ? 10 : 28));
     // e-ink com "página inteira": a página cabe na altura da tela (sem rolar dentro dela)
     if (this.paged && (this.app.settings || {}).pageFit && !this.columns) {
@@ -300,7 +321,7 @@ export class Viewer {
     const sc = this.scale * (p.fit || 1);
     s.sc = sc;
     const mw = this.hasMargin(p.key) && !p.box ? p.w * MARGIN_FRAC : 0;
-    const cb = p.box || (this.cropBox && p.kind === 'pdf' && !mw ? this.cropBox : null);
+    const cb = p.box || (this.cropBox && p.kind === 'pdf' && !mw ? this.cropBox : null) || (this.nbCrop && p.kind === 'nb' && p.tpl !== 'cover' ? this.nbCrop : null);
     s.cb = cb;
     const am = this.amOf(p);
     s.amw = am.w; s.am0 = am.x0;

@@ -27,14 +27,14 @@ export function parse(s) {
 }
 
 // ---------- peças de interface ----------
-function inputRow(label, unit, opts = {}) {
+export function inputRow(label, unit, opts = {}) {
   const inp = h('input', { type: 'text', inputmode: 'decimal', 'aria-label': label, readonly: opts.out ? true : undefined });
   if (opts.out) inp.classList.add('out');
   const row = h('label.crow', h('span.cl', label), inp, h('span.cu', unit || ''));
   return { row, inp };
 }
 // grupo ligado: cada campo converte de/para uma grandeza base
-function linked(host, fields, init) {
+export function linked(host, fields, init) {
   const rows = fields.map(f => Object.assign(inputRow(f.label, f.unit), { f }));
   const set = (base, except) => { for (const r of rows) if (r !== except) r.inp.value = isFinite(base) ? fmt(r.f.from(base)) : ''; };
   for (const r of rows) {
@@ -44,7 +44,7 @@ function linked(host, fields, init) {
   if (init !== undefined) set(init);
 }
 // fórmula: entradas → saídas
-function formula(host, ins, outs, fn) {
+export function formula(host, ins, outs, fn) {
   const I = ins.map(f => Object.assign(inputRow(f.label, f.unit), { f }));
   const O = outs.map(f => Object.assign(inputRow(f.label, f.unit, { out: true }), { f }));
   const run = () => {
@@ -58,12 +58,20 @@ function formula(host, ins, outs, fn) {
   run();
   return { I, run };
 }
-const sec = (host, t, note) => { host.appendChild(h('div.csec', t)); if (note) host.appendChild(h('div.cnote', note)); };
+export const sec = (host, t, note) => { host.appendChild(h('div.csec', t)); if (note) host.appendChild(h('div.cnote', note)); };
 
 // ---------- calculadoras ----------
 const CALCS = [
   ['luz', 'Óptica · λ, energia, número de onda'],
   ['nk', 'Índice de refração dos materiais (refractiveindex.info)'],
+  ['ptab', 'Tabela periódica (materiais)'],
+  ['semi', 'Semicondutores: nᵢ, dopagem, nível de Fermi'],
+  ['metal', 'Metais: elétrons livres e Drude'],
+  ['lorentz', 'Oscilador de Lorentz (ε, n, k)'],
+  ['mie', 'Esfera: espalhamento Mie e força óptica'],
+  ['rayleigh', 'Pinça em regime Rayleigh (forças, aquecimento)'],
+  ['beer', 'Absorção: Beer–Lambert'],
+  ['xrd', 'Raios X: Bragg e Scherrer'],
   ['raman', 'Espectroscopia · Raman e linhas'],
   ['gauss', 'Feixe gaussiano'],
   ['foco', 'Focalização · resolução e intensidade'],
@@ -76,6 +84,7 @@ const CALCS = [
 function buildCalc(id, host) {
   clear(host);
   if (id === 'nk') { import('./nkdb.js').then(m => m.buildNk(host)); return; }
+  if (['ptab', 'semi', 'metal', 'lorentz', 'mie', 'rayleigh', 'beer', 'xrd'].includes(id)) { import('./calcmat.js').then(m => m.buildMat(id, host)); return; }
   const { h: hp, c, e, kB, NA } = K;
   if (id === 'luz') {
     sec(host, 'Fóton', 'Digite em qualquer campo; os outros mudam juntos.');

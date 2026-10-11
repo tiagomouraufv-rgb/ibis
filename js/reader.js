@@ -108,6 +108,7 @@ export class Reader {
       for (const t of this.app.texts) if (t.root.isConnected) t.bestFit(on);
     }
     this.fitBtn.setAttribute('aria-pressed', String(on));
+    if (this.fitRail) this.fitRail.setAttribute('aria-pressed', String(on));
     toast(on ? 'Melhor ajuste: bordas cortadas e texto na largura da tela.' : 'Página inteira.', 1500);
   }
 
@@ -169,6 +170,8 @@ export class Reader {
       tb('note', 'note', 'Nota ou nota de voz: toque no lugar'),
       btn('shapes', '', () => this.openTools('shapes'), { title: 'Formas: geométricas, óptica (Gauss, LG, Bessel, Airy…), quântica, eletromagnetismo, física médica', iconOnly: true, cls: 'ibtn tool' }),
       btn('calc', '', () => this.openTools('calc'), { title: 'Calculadora física: λ ↔ eV ↔ cm⁻¹, feixe gaussiano, pinças, física médica, unidades', iconOnly: true, cls: 'ibtn tool' }),
+      this.aiRail = btn('ai', '', () => this.openTools('ai'), { title: 'IA: perguntar ao documento (sua chave), Adobe Acrobat ou NotebookLM / Gemini', iconOnly: true, cls: 'ibtn tool notnb' }),
+      this.fitRail = btn('fitpage', '', () => this.bestFit(), { title: 'Melhor ajuste: o texto (ou o que está escrito) ocupa a largura da tela', iconOnly: true, cls: 'ibtn tool' }),
       this.imgBtn = btn('image', '', e => this.imageMenu(e), { title: 'Inserir imagem', iconOnly: true, cls: 'ibtn tool' }),
       h('div.rsep'), this.colorBox, this.widthBox, h('div.rsep'),
       btn('undo', '', () => this.undo(), { title: 'Desfazer', iconOnly: true, cls: 'ibtn tool' }),
@@ -182,7 +185,8 @@ export class Reader {
     this.right = h('aside.rpanel');
     this.pill = h('div.pill');
     this.selMenu = h('div.selmenu', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
-    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal(), { onShape: (s, done) => this.armShape(s, done), getSelected: () => { const v = this.viewers.find(x => x.sel); return v ? v.annsOf(v.sel.s.p.key).filter(a => v.sel.ids.has(a.id)) : null; } });
+    this.mathPal = buildMathPal(code => this.textEditor.insertMath(code), () => this.toggleMathPal(), { onShape: (s, done) => this.armShape(s, done), getSelected: () => { const v = this.viewers.find(x => x.sel); return v ? v.annsOf(v.sel.s.p.key).filter(a => v.sel.ids.has(a.id)) : null; },
+      ai: { kind: 'pdf', doc: () => this.doc && !NB.isNotebook(this.doc) ? this.doc : null, viewer: () => this.active, selection: () => (this.sel && this.sel.text ? cleanText(this.sel.text) : String(window.getSelection() || '')).trim(), goTo: n => { const v = this.active; if (v) { v.goTo('p' + n, 0, { flash: true }); this.onNav(v); } } } });
     r.append(top, h('div.rbody', rail, this.side, h('div.panewrap', this.panes, this.pagePill), this.mathPal, this.right), this.selMenu, this.pill);
     this.bindSwipe();
   }
@@ -366,6 +370,10 @@ export class Reader {
 
   afterOpen() {
     this.titleEl.textContent = S.docTitle(this.doc);
+    if (this.toolsOpen && this.mathPal && this.mathPal.dataset.tab === 'ai') this.mathPal.setTab('ai');
+    const fon = !!(this.active && this.active.fitOn);
+    if (this.fitBtn) this.fitBtn.setAttribute('aria-pressed', String(fon));
+    if (this.fitRail) this.fitRail.setAttribute('aria-pressed', String(fon));
     const nb = NB.isNotebook(this.doc);
     this.root.classList.toggle('isnb', nb);
     this.textTool.style.display = nb ? '' : 'none';

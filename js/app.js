@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.0.2';
+const VERSION = '1.1.0';
 
 class App {
   constructor() {
@@ -96,8 +96,33 @@ class App {
     if (!s) return;
     try {
       const o = JSON.parse(s);
+      if (o.text !== undefined) { await this.receiveSharedText(o.text, o.subject); return; }
       await this.importFiles([new File([b64ToBytes(o.b64)], o.name || 'documento.pdf', { type: 'application/pdf' })]);
     } catch (e) { toast('Não foi possível abrir o arquivo recebido: ' + e.message, 5000); }
+  }
+
+  // texto compartilhado de outro app (resposta da IA do Acrobat ou do NotebookLM, um trecho…): vira nota no Digest
+  async receiveSharedText(text, subject) {
+    const A = await import('./aipanel.js');
+    const last = A.lastSent();
+    const docs = (await S.allDocs()).filter(d => d.kind !== 'notebook');
+    const cur = last && docs.find(d => d.id === last.docId) || (this.reader.doc && docs.find(d => d.id === this.reader.doc.id)) || null;
+    const pick = h('select', [h('option', { value: '' }, '— só no Digest, sem documento —')].concat(docs.map(d => h('option', { value: d.id }, S.docTitle(d)))));
+    pick.value = cur ? cur.id : '';
+    const src = last ? (last.dest === 'adobe' ? 'Resposta do Acrobat' : last.dest === 'nlm' ? 'Resposta do NotebookLM' : 'Resposta da IA') : 'Texto recebido';
+    const ta = h('textarea', { rows: 10 }); ta.value = text;
+    modal('Guardar o texto recebido', h('div',
+      h('p.muted', last && cur ? 'Veio logo depois do envio de “' + S.docTitle(cur) + '” (' + last.scope + ').' : 'Escolha a que documento ligar a nota.'),
+      h('label.field', h('span', 'Documento'), pick), h('label.field', h('span', 'Texto'), ta)), [
+      { label: 'Cancelar', onclick: c => c() },
+      { label: 'Guardar no Digest', primary: true, onclick: async c => {
+        try {
+          if (pick.value) await A.saveAnswer(pick.value, ta.value.trim(), { page: last && last.docId === pick.value ? last.page || 1 : 1, scope: last && last.docId === pick.value ? last.scope : '', source: subject || src, tag: last ? ({ adobe: 'acrobat', nlm: 'notebooklm' })[last.dest] : '' });
+          else { const st = await S.digest(); /* global dgAdd */ const r = dgAdd(st, { doc: '', name: subject || src, page: 1, quote: subject || src, note: ta.value.trim(), tags: ['ia'] }, Date.now()); await S.saveDigest(r.store); }
+          c(); toast('Guardado no Digest.');
+        } catch (e) { toast(e.message, 4000); }
+      } },
+    ]);
   }
 
   // botão voltar do Android: fecha janelas, painéis e volta para a biblioteca. Retorna true se tratou.

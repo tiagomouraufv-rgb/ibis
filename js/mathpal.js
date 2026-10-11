@@ -12,7 +12,7 @@ export function buildMathPal(onInsert, onClose, opts = {}) {
     ['Funções', [['eˣ', 'e^{@}'], ['ln', '\\ln'], ['log', '\\log'], ['exp', '\\exp'], ['sin', '\\sin'], ['cos', '\\cos'], ['tan', '\\tan'], ['Re', '\\mathrm{Re}'], ['Im', '\\mathrm{Im}'], ['ε₀', '\\varepsilon_0'], ['μ₀', '\\mu_0'], ['(n)', '\\eqn']]],
   ];
   // painel da direita: Matemática (LaTeX), Formas e Calculadora, escolhidos no seletor do alto
-  const tabs = [['math', 'Matemática (LaTeX)']].concat(opts.onShape ? [['shapes', 'Formas']] : [], [['calc', 'Calculadora física']]);
+  const tabs = [['math', 'Matemática (LaTeX)']].concat(opts.onShape ? [['shapes', 'Formas']] : [], [['calc', 'Calculadora física']], opts.ai ? [['ai', 'IA']] : []);
   const sel = h('select.tpsel', { 'aria-label': 'Ferramenta' }, tabs.map(([id, l]) => h('option', { value: id }, l)));
   const body = h('div.tpbody');
   const pal = h('aside.mathpal.toolpanel', { 'aria-label': 'Ferramentas' },
@@ -28,6 +28,15 @@ export function buildMathPal(onInsert, onClose, opts = {}) {
     sel.value = id; pal.dataset.tab = id;
     clear(body);
     if (id === 'math') body.appendChild(math);
+    else if (id === 'ai') {
+      const docId = opts.ai.doc() && opts.ai.doc().id;
+      if (!built.ai || built.aiDoc !== docId || built.aiStamp !== (opts.ai.doc() || {}).md) {
+        built.ai = h('div.aiwrap'); built.aiDoc = docId; built.aiStamp = (opts.ai.doc() || {}).md;
+        const A = await import('./aipanel.js');
+        A.buildAiPanel(built.ai, opts.ai).catch(e => { built.ai.textContent = 'Erro: ' + e.message; });
+      }
+      body.appendChild(built.ai);
+    }
     else if (id === 'calc') { if (!built.calc) { built.calc = h('div.calcwrap'); const C = await import('./calc.js'); C.buildCalculator(built.calc); } body.appendChild(built.calc); }
     else { if (!built.shapes) { built.shapes = h('div.shapewrap'); await buildShapes(built.shapes, opts.onShape, opts.getSelected); } body.appendChild(built.shapes); }
   };

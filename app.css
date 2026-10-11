@@ -801,3 +801,45 @@ html[data-form="phone"] .mathpal.open.wide { width: auto; height: 60vh; }
 .shadd .shprev { font-size: 26px; line-height: 44px; color: var(--muted, #5b6672); }
 .ucatbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
 .ucatbar:empty { display: none; }
+/* 1.1: tabela periódica e materiais */
+.ptsearch { display: flex; gap: 6px; margin: 6px 0; }
+.ptsearch input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line2); border-radius: 8px; font: inherit; }
+.ptgrid { display: grid; grid-template-columns: repeat(18, 1fr); grid-template-rows: repeat(10, auto); gap: 1px; margin: 4px 0 8px; }
+.ptgrid .ptel { padding: 0; min-height: 15px; border: 0; border-radius: 2px; font: 600 8px/15px var(--font); color: #222; cursor: pointer; }
+.ptgrid .ptel small { display: block; font-size: 8px; font-weight: 400; line-height: 1; opacity: .7; }
+.ptgrid .ptel.on { outline: 2px solid #1D5A8A; outline-offset: -1px; }
+.ptgrid .ptgap { font-size: 9px; text-align: center; color: #888; }
+.ptgrid > :nth-child(n) { min-width: 0; }
+.ptgrid.big { gap: 2px; }
+.ptgrid.big .ptel { min-height: 38px; font-size: 14px; line-height: 1.1; padding: 2px 0; }
+.ptgrid.big .ptel small { font-size: 9px; }
+.ptgrid { grid-auto-rows: auto; }
+.ptpop { width: min(780px, calc(100vw - 16px)) !important; }
+.ptpop .lookbody { max-height: min(80vh, 760px); overflow: auto; }
+.pthead { display: flex; gap: 10px; align-items: center; margin: 4px 0 6px; }
+.ptbig { width: 54px; height: 54px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #222; flex: none; }
+.ptbig b { font-size: 22px; } .ptbig small { font-size: 10px; }
+.pttitle { font-weight: 700; font-size: 16px; }
+.ptcard { display: grid; gap: 2px; margin: 4px 0 8px; font-size: 12.5px; }
+.ptrow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: baseline; border-bottom: 1px dotted var(--line); padding: 2px 0; }
+.ptl { color: var(--muted, #5b6672); } .ptv { font-variant-numeric: tabular-nums; text-align: right; } .ptu { color: var(--muted, #5b6672); font-size: 11px; min-width: 34px; }
+.ptlist { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.ptlist .chip { min-height: 30px; padding: 0 9px; font-size: 12px; }
+.ptbtns { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+/* 1.1: painel de IA */
+.aiwrap { display: flex; flex-direction: column; gap: 4px; }
+.aiopt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 3px 0; font-size: 13px; }
+.aiopt select, .aiopt input[type=text] { flex: 1 1 100%; margin-left: 24px; min-width: 0; padding: 5px 7px; border: 1px solid var(--line2); border-radius: 7px; font: inherit; font-size: 12.5px; background: var(--panel); color: var(--ink); }
+.aiyt .aiopt span { font-size: 11.5px; word-break: break-all; }
+.aiq { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--line2); border-radius: 8px; font: inherit; font-size: 13px; resize: vertical; }
+.aichips { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.aichips .chip { min-height: 30px; font-size: 12px; text-align: left; border-radius: 10px; padding: 4px 9px; }
+.aicard { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 8px 0; background: var(--panel); font-size: 13px; }
+.aiqtext { font-weight: 600; margin-bottom: 4px; }
+.aians { font-size: 13px; line-height: 1.5; }
+.aians p { margin: 4px 0; }
+.aicost { font-size: 11px; color: var(--muted, #5b6672); margin: 4px 0; }
+button.cite { border: 0; background: rgba(29,90,138,.12); color: #1D5A8A; border-radius: 5px; padding: 0 4px; font: inherit; font-size: 12px; cursor: pointer; }
+.aipaste { margin-top: 8px; font-size: 12.5px; }
+.aipaste textarea { width: 100%; box-sizing: border-box; margin: 4px 0; border: 1px solid var(--line2); border-radius: 8px; padding: 6px; font: inherit; }
+.aiopt > span { flex: 1 1 0; min-width: 0; }

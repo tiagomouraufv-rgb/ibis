@@ -113,7 +113,8 @@ export class TextScreen extends MdEditBase {
     this.flow = h('div.tdflow', this.article);
     this.pane = h('main.tdpane', this.flow);
     new ResizeObserver(() => { if (this.inkPad && this.inkPad.on) this.inkPad.layout(); }).observe(this.article);
-    this.mathPal = buildMathPal(code => this.insertMath(code), () => this.toggleMathPal());
+    this.mathPal = buildMathPal(code => this.insertMath(code), () => this.toggleMathPal(), {
+      ai: { kind: 'text', doc: () => { if (this.doc) { try { this.doc.md = this.joined(); } catch (e) {} } return this.doc; }, viewer: () => null, selection: () => String(window.getSelection() || '').trim(), goTo: () => {} } });
     this.mathPal.classList.add('open');
     this.right = h('aside.rpanel');
     // barra lateral: inserir coisas no texto
@@ -134,6 +135,8 @@ export class TextScreen extends MdEditBase {
       rb('sigma', 'Mostrar/esconder os símbolos de matemática', () => { this.mathPal.setTab('math'); this.toggleMathPal(); }),
       rb('calc', 'Calculadora física: λ ↔ eV ↔ cm⁻¹, feixe gaussiano, pinças, física médica, unidades', () => { const open = this.mathPal.classList.contains('open') && this.mathPal.dataset.tab === 'calc'; this.mathPal.setTab(open ? 'math' : 'calc'); this.mathPal.classList.toggle('open', !open || this.mathPrefOpen !== false); this.mathPal.classList.toggle('wide', !open); }),
       this.inkBtn = rb('pen', 'Folha de escrita à mão ao lado do texto (S Pen)', () => this.toggleInk()),
+      this.aiRail = rb('ai', 'IA: perguntar ao texto (sua chave) ou mandar ao NotebookLM / Gemini', () => { const open = this.mathPal.classList.contains('open') && this.mathPal.dataset.tab === 'ai'; this.mathPal.setTab(open ? 'math' : 'ai'); this.mathPal.classList.toggle('open', !open || this.mathPrefOpen !== false); this.mathPal.classList.toggle('wide', !open); }),
+      this.fitRail = rb('fitpage', 'Melhor ajuste: o texto ocupa a largura da tela', () => this.bestFit()),
       h('div.grow'),
       h('div.penhint', 'Toque num bloco para editar'));
     this.selMenu = h('div.selmenu.tdsel', { role: 'toolbar', 'aria-label': 'Ações do trecho selecionado' });
@@ -155,6 +158,7 @@ export class TextScreen extends MdEditBase {
 
   // ---------- abrir ----------
   async open(doc, at) {
+    try { if (localStorage.getItem('leitor-textfit')) this.bestFit(true); } catch (e) {}
     if (this.cur) this.commit();
     this.doc = doc;
     this.blocks = splitBlocks(doc.md || '');
@@ -180,6 +184,8 @@ export class TextScreen extends MdEditBase {
     const on = force !== undefined ? force : !this.root.classList.contains('fitwide');
     this.root.classList.toggle('fitwide', on);
     if (this.fitBtn) this.fitBtn.setAttribute('aria-pressed', String(on));
+    if (this.fitRail) this.fitRail.setAttribute('aria-pressed', String(on));
+    try { localStorage.setItem('leitor-textfit', on ? '1' : ''); } catch (e) {}
     if (force === undefined) {
       toast(on ? 'Melhor ajuste: texto na largura da tela.' : 'Coluna de leitura.', 1500);
       if (this.app.split) for (const r of this.app.readers) if (r.root.isConnected && r.active && r.active.doc) r.active.bestFit(on);
