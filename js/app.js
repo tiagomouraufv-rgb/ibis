@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 
 class App {
   constructor() {
@@ -381,6 +381,30 @@ class App {
       toast('Importando ' + f.name + '…', 10000);
       try {
         const bytes = new Uint8Array(await f.arrayBuffer());
+        // PDF que voltou do reMarkable (enviado por este app): trazer as marcas para o documento original?
+        if (files.length === 1) {
+          const R = await import('./rmreturn.js');
+          const info = await R.rmReturnInfo(bytes);
+          const orig = info && await S.getDoc(info.appDocId);
+          if (orig && info.marks > 0) {
+            const choice = await new Promise(res => modal('PDF do reMarkable', h('div',
+              h('p', 'Este PDF voltou do reMarkable: é “' + S.docTitle(orig) + '”, que você mandou por “Enviar ao reMarkable”.'),
+              h('p', 'Trazer a escrita e os destaques feitos lá para o documento original? Eles viram traços e destaques normais do app (dá para apagar, mover e desfazer). Se você já trouxe antes, as marcas do reMarkable são trocadas pelas deste PDF.'),
+              h('p.muted', 'As notas digitadas no reMarkable (RM2 Notas) não vêm no PDF.')), [
+              { label: 'Importar como documento novo', onclick: c => { res('new'); c(); } },
+              { label: 'Trazer para o original', primary: true, onclick: c => { res('merge'); c(); } },
+            ], { onclose: () => res(null) }));
+            if (choice === null) continue;
+            if (choice === 'merge') {
+              toast('Trazendo as marcas do reMarkable…', 15000);
+              let r;
+              try { r = await R.importRmMarks(orig, info); } catch (e) { toast('Não deu para trazer: ' + e.message, 9000); return; }
+              toast('Do reMarkable: ' + r.inks + ' traço(s) e ' + r.hls + ' destaque(s) em ' + r.pages + ' página(s)' + (r.replaced ? ' (as marcas trazidas antes foram trocadas)' : '') + '.', 6000);
+              this.openDoc(orig.id);
+              return;
+            }
+          }
+        }
         const doc = await importPdfBytes(f.name, bytes);
         if (projectId) { doc.projects = [projectId]; await S.saveDoc(doc); }
         restored += doc.restored || 0; adobe += doc.adobe || 0; n++; last = doc;

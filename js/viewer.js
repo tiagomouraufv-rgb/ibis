@@ -33,6 +33,10 @@ export function strokePath(pts) {
   return d;
 }
 
+export function fillPath(polys) {
+  return polys.map(pl => 'M' + pl.map(p => p[0].toFixed(2) + ' ' + p[1].toFixed(2)).join('L') + 'Z').join('');
+}
+
 export function strokeWidth(a) {
   if (a.tool === 'marker') return a.width;
   const ps = a.pts.map(p => p[2]).filter(p => p > 0);
@@ -548,6 +552,8 @@ export class Viewer {
       g.appendChild(lg);
     }
     for (const a of list.filter(a => a.kind === 'ink')) {
+      // traço "preenchido" (contorno vindo do reMarkable): desenha a forma, não uma linha
+      if (a.fill) { g.appendChild(sv('path', { d: fillPath(a.fill), fill: a.color, 'fill-rule': 'evenodd', stroke: 'none', 'data-id': a.id })); continue; }
       const p = sv('path', { d: strokePath(a.pts), stroke: a.color, 'stroke-width': strokeWidth(a), fill: 'none', 'stroke-linecap': a.tool === 'marker' ? 'butt' : 'round', 'stroke-linejoin': 'round', 'data-id': a.id });
       if (a.tool === 'marker') { p.setAttribute('opacity', '0.42'); p.setAttribute('class', 'mk'); }
       g.appendChild(p);
@@ -1276,6 +1282,14 @@ export class Viewer {
     op.cursor.setAttribute('cx', hit.x); op.cursor.setAttribute('cy', hit.y);
     for (const a of this.annsOf(hit.s.p.key)) {
       if (a.kind !== 'ink') continue;
+      if (a.fill) {
+        // forma vinda do reMarkable: a borracha apaga a forma inteira
+        if (!op.cuts.has(a.id) && a.pts.some(p => Math.hypot(p[0] - hit.x, p[1] - hit.y) < R + 3)) {
+          op.cuts.set(a.id, []);
+          const el0 = hit.s.svg.querySelector(`[data-id="${a.id}"]`); if (el0) el0.setAttribute('d', 'M0 0');
+        }
+        continue;
+      }
       let segs = op.cuts.get(a.id);
       if (!segs) {
         if (!a.pts.some(p => Math.hypot(p[0] - hit.x, p[1] - hit.y) < R + a.width + 6)) continue;
@@ -1457,7 +1471,10 @@ function segDist(px, py, x1, y1, x2, y2) {
 export function xformAnn(a, M, f, deg) {
   const c = JSON.parse(JSON.stringify(a));
   const r2 = v => +v.toFixed(2);
-  if (c.kind === 'ink') c.pts = c.pts.map(p => { const q = M(p[0], p[1]); return [r2(q[0]), r2(q[1]), p[2], p[3]]; });
+  if (c.kind === 'ink') {
+    c.pts = c.pts.map(p => { const q = M(p[0], p[1]); return [r2(q[0]), r2(q[1]), p[2], p[3]]; });
+    if (c.fill) c.fill = c.fill.map(pl => pl.map(p => { const q = M(p[0], p[1]); return [r2(q[0]), r2(q[1])]; }));
+  }
   else if (c.kind === 'img') {
     const q = M(c.x + c.w / 2, c.y + c.h / 2);
     c.w *= f; c.h *= f; c.x = q[0] - c.w / 2; c.y = q[1] - c.h / 2;

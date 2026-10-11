@@ -142,6 +142,21 @@ export async function exportPdf(doc, opts) {
         const col = rgb(a.color);
         const marker = a.tool === 'marker';
         let ops = '';
+        if (a.fill) {
+          // forma preenchida (traço vindo do reMarkable)
+          let fo = `${col.map(f).join(' ')} rg `;
+          for (const pl of a.fill) { const qs = pl.map(q => conv(q[0], q[1])); fo += `${f(qs[0][0])} ${f(qs[0][1])} m ` + qs.slice(1).map(q => `${f(q[0])} ${f(q[1])} l `).join('') + 'h '; }
+          fo += 'f*';
+          if (flat) flatOps += 'q ' + fo + ' Q\n';
+          else {
+            const rect = bounds(pts, 1);
+            const annot = ctx.obj({ Type: 'Annot', Subtype: 'Ink', Rect: rect, F: 4, C: col, BS: { W: 0.5 }, InkList: [pts.flat()], AP: { N: formXObject(ctx, rect, fo, {}) } });
+            annot.set(PDFName.of('T'), author);
+            annot.set(PDFName.of('NM'), PDFString.of(NM + a.id));
+            pg.node.addAnnot(ctx.register(annot));
+          }
+          continue;
+        }
         if (marker) ops += `/${gsName(0.42, true)} gs `;
         ops += `${col.map(f).join(' ')} RG ${f(w)} w ${marker ? 0 : 1} J 1 j `;
         ops += `${f(pts[0][0])} ${f(pts[0][1])} m `;
