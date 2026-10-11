@@ -1,10 +1,11 @@
-# Leitor de Pesquisa 1.2.0
+# Leitor de Pesquisa 1.2.1
 
 App de leitura de PDF para tablet, celular, Fold, DeX, computador e Boox (funciona no Chrome e pode ser instalado como app).
 Seus PDFs, anotações, áudios e o Digest ficam guardados no aparelho (no armazenamento do Chrome) e, se você ligar a sincronização, numa pasta do **seu** Google Drive.
 
 ## O que tem nesta versão
 
+- **Novo na 1.2.1:** Enviar ao reMarkable abre uma janela com **Salvar o PDF** (para mandar pelo computador) e **Compartilhar…**, e mostra quantas notas e trechos vão escondidos. O “Exportar PDF anotado” comum não leva as notas para o reMarkable.
 - **Novo na 1.2.0:** **Enviar ao reMarkable** (menu ⋯ do documento na biblioteca, na janela Exportar e na exportação de textos): um PDF para o leitor nativo do reMarkable, com destaques e escrita desenhados (destaque com nota sai destacado e sublinhado) e, escondidos dentro dele, as notas digitadas e os trechos do Digest daquele documento. Com o RM2 Notas 0.9 e o RM2 Digest 0.3 no reMarkable, as notas aparecem sozinhas ao abrir o documento (nota de destaque na margem, adesiva no mesmo ponto) e os trechos entram no Digest de lá. Textos viram PDF com camada de texto (dá para selecionar e destacar no reMarkable); parágrafos longos são divididos entre páginas em vez de encolhidos.
 - **Novo na 1.1.0:** botão IA na barra lateral: IA interna (perguntas com citação clicável das páginas), Adobe Acrobat e NotebookLM / Gemini, mandando o PDF inteiro, um capítulo, uma seção ou páginas, com ou sem as suas anotações (e vídeos do YouTube como fontes extras); a resposta volta como nota no Digest; melhor ajuste também em textos e cadernos; tabela periódica interativa e calculadoras de materiais (semicondutores, metais, Lorentz, Mie, pinça Rayleigh, Beer–Lambert, raios X).
 - **Novo na 1.0.2:** links corrigidos (janela fechada ou minimizada não “some” com o link; com uma janela só, abre aqui ou lado a lado, à escolha); “Nova página” no fim do caderno e página nova automática ao escrever no fim; Delete apaga a seleção; depois de soltar uma forma volta para Selecionar; formas de óptica geométrica (lentes e espelhos com raios e imagem), hidrogênio (orbitais, P(r), níveis) e harmônicos esféricos, química e mais eletromagnetismo (onda E ⊥ B ⊥ k, linhas de campo, ímã, polarização…); categorias e formas suas (da seleção, de SVG ou de imagem); índice de refração atualizado toda semana; botão de melhor ajuste da tela.
