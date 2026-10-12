@@ -332,6 +332,7 @@ export async function applyReturn(ret) {
   for (const { g, id } of incoming) {
     dgSeen.add(id);
     const k = items.findIndex(x => x.id === id);
+    if (k >= 0 && !g.ext && g.id && items[k].rmId !== str(g.id)) { items[k] = dgNormItem(Object.assign({}, items[k], { rmId: str(g.id) })); dgChanged = true; }
     if (k >= 0) {
       const it = items[k];
       if (g.ext && g.updated === g.extAt) continue;   // não mexido no reMarkable
@@ -346,7 +347,7 @@ export async function applyReturn(ret) {
     }
     if (g.ext || tombs[id]) continue;   // saiu do app e foi apagado aqui; ou apagado aqui
     const it = dgNormItem({ id, created: str(g.created) || now, updated: now, src: { doc: doc.id, name: doc.name }, page: pageNo(g.page), pageEnd: g.pageEnd > g.page ? pageNo(g.pageEnd) : 0,
-      pageKey: keyOf(g.page), pageKeyEnd: g.pageEnd > g.page ? keyOf(g.pageEnd) : '', quote: str(g.quote), note: str(g.note), tags: g.tags || [], area: g.area || [], rmDoc: ret.rmDoc, rmIn: str(g.updated) });
+      pageKey: keyOf(g.page), pageKeyEnd: g.pageEnd > g.page ? keyOf(g.pageEnd) : '', quote: str(g.quote), note: str(g.note), tags: g.tags || [], area: g.area || [], rmDoc: ret.rmDoc, rmIn: str(g.updated), rmId: str(g.id) });
     if (!it || (!it.quote && !it.note)) continue;
     it.rmSig = dgSig(it);
     items.push(it); out.digest++; dgChanged = true;
@@ -357,7 +358,31 @@ export async function applyReturn(ret) {
     if (it.rmSig === dgSig(it)) { items.splice(k, 1); out.removed++; dgChanged = true; }
   }
   if (dgChanged) await S.saveDigest(Object.assign({}, dg, { items }));
+  // página em que você parou no reMarkable: se for mais recente que a daqui, o documento abre nela
+  if (ret.cur && !isText && list[ret.cur.page] && !isOpen(doc.id)) {
+    const here = (doc.fts && doc.fts.lastKey) || 0;
+    if (+ret.cur.at > here && doc.lastKey !== list[ret.cur.page].key) {
+      const d2 = await S.getDoc(doc.id);
+      d2.lastKey = list[ret.cur.page].key; d2.lastY = 0;
+      await S.saveDoc(d2, { noUndo: true });
+      out.page = ret.cur.page + 1;
+    }
+  }
+  await stamp(doc.id, 'in');
   return out;
+}
+
+function isOpen(docId) {
+  const A = window.leitorApp;
+  if (!A) return false;
+  const rs = [].concat(A.readers || [], A.reader ? [A.reader] : []);
+  return rs.some(r => r && r.root && r.root.isConnected && r.doc && r.doc.id === docId);
+}
+// quando cada documento foi recebido / gravado (para o painel de sincronização)
+async function stamp(docId, what) {
+  const st = Object.assign({}, await db.kvGet('rmStat', {}));
+  st[docId] = Object.assign({}, st[docId] || {}, { [what]: Date.now() });
+  await db.kvSet('rmStat', st);
 }
 
 // ---------------- receber ----------------
@@ -552,6 +577,10 @@ export async function writeAppFile(docId, opts = {}) {
   const st = Object.assign({ sent: {}, gone: [], last: '' }, await db.kvGet('rmOut:' + docId, {}));
   const names = {}; for (const d of await S.allDocs()) names[d.id] = S.docTitle(d);
   const r = appNotesFor(doc, list, await S.annots(docId), st.sent, st.gone, Date.now(), names);
+  const dgr = appDigestFor(doc, list, (await S.digest()).items, st.sentDg || {}, st.goneDg || [], Date.now());
+  r.obj.digest = dgr.items; r.obj.dgGone = dgr.gone.map(g => { const c = Object.assign({}, g); delete c.at; return c; });
+  const ci = list.findIndex(p => p.key === doc.lastKey);
+  if (ci >= 0) r.obj.cur = { page: ci, at: (doc.fts && doc.fts.lastKey) || 0 };
   const text = JSON.stringify(r.obj);
   if (text === st.last && !opts.force) return true;
   const name = 'app-' + String(docId).replace(/[^A-Za-z0-9_-]/g, '') + '.json';
@@ -571,22 +600,26 @@ export async function writeAppFile(docId, opts = {}) {
     if (!writeWarned) { writeWarned = true; toast('Não consegui gravar as notas na pasta do reMarkable: ' + e.message, 7000); }
     return false;
   }
-  await db.kvSet('rmOut:' + docId, { sent: r.sent, gone: r.gone, last: text });
+  await db.kvSet('rmOut:' + docId, { sent: r.sent, gone: r.gone, sentDg: dgr.sent, goneDg: dgr.gone, last: text });
+  await stamp(docId, 'out');
   return true;
 }
 
 // depois de cada mudança nas anotações de um documento ligado, grava o arquivo (alguns segundos depois)
 const pendingWrite = new Map();
 export function startRmAutoWrite() {
-  S.on('annots', ev => {
-    const id = ev && ev.docId;
+  const later = id => {
     if (!id) return;
     clearTimeout(pendingWrite.get(id));
     pendingWrite.set(id, setTimeout(async () => {
       pendingWrite.delete(id);
       try { await writeAppFile(id, { quiet: true }); } catch (e) { console.warn(e); }
     }, 2500));
-  });
+  };
+  S.on('annots', ev => later(ev && ev.docId));
+  // página em que você está (o arquivo só muda quando muda a página) e Digest
+  S.on('docs', d => { if (d && d.id) db.kvGet('rmLinks', {}).then(l => { if (l[d.id]) later(d.id); }); });
+  S.on('digest', () => db.kvGet('rmLinks', {}).then(l => Object.keys(l).forEach(later)));
 }
 
 // páginas como o reMarkable as conhece: sem as páginas de nota à mão que vieram de lá (elas ficam
@@ -619,4 +652,93 @@ export async function syncRmNow() {
   for (const id of Object.keys(links)) { try { await writeAppFile(id, { interactive: true, force: true }); } catch (e) { ok = false; } }
   if (r && !(r.added + r.updated + r.removed + r.conflicts + r.digest + (r.ink || 0))) toast(ok ? 'Sincronizado: nada novo do reMarkable; o que mudou aqui já está na pasta.' : 'Recebido; não consegui gravar na pasta.', 4500);
   return r;
+}
+
+// Digest deste documento para o reMarkable: só o texto (figuras e áudio ficam aqui)
+export function appDigestFor(doc, list, allItems, prevSent, gonePrev, nowMs) {
+  const idx = new Map(list.map((p, i) => [p.key, i]));
+  const pageOf = (key, n) => idx.has(key) ? idx.get(key) : (n > 0 ? n - 1 : -1);
+  const items = [], sent = {};
+  for (const it of allItems || []) {
+    if (!it.src || it.src.doc !== doc.id) continue;
+    if (!str(it.quote).trim() && !str(it.note).trim()) continue;   // só figura/áudio: não vai
+    const g = { ext: it.id, pdfPage: pageOf(it.pageKey, it.page), pdfPageEnd: it.pageEnd ? pageOf(it.pageKeyEnd, it.pageEnd) : -1, quote: str(it.quote), note: str(it.note),
+      tags: it.tags || [], area: it.area || [], created: str(it.created), updated: str(it.updated), rmIn: str(it.rmIn) };
+    if (it.rmDoc && it.rmId) g.rm = { doc: it.rmDoc, id: it.rmId };
+    items.push(g);
+    sent[it.id] = { rm: g.rm || null, rmIn: g.rmIn };
+  }
+  const gone = (gonePrev || []).filter(x => nowMs - (x.at || 0) < 60 * 86400000 && !sent[x.ext]);
+  for (const id of Object.keys(prevSent || {})) {
+    if (sent[id] || gone.some(x => x.ext === id)) continue;
+    const x = { ext: id, rmIn: str(prevSent[id].rmIn), at: nowMs };
+    if (prevSent[id].rm) x.rm = prevSent[id].rm;
+    gone.push(x);
+  }
+  return { items, gone, sent };
+}
+
+// ---------------- painel de sincronização ----------------
+export const CONFLICT_MARK = CONFLICT.trim().split('\n')[0];
+export async function syncOverview() {
+  const links = await db.kvGet('rmLinks', {});
+  const stat = await db.kvGet('rmStat', {});
+  const docs = new Map((await S.allDocs()).map(d => [d.id, d]));
+  const linked = Object.keys(links).filter(id => docs.has(id)).map(id => ({ docId: id, title: S.docTitle(docs.get(id)), rmDocs: links[id].length, in: (stat[id] || {}).in || 0, out: (stat[id] || {}).out || 0 }))
+    .sort((a, b) => Math.max(b.in, b.out) - Math.max(a.in, a.out));
+  const conflicts = [];
+  for (const l of linked) for (const a of await S.annots(l.docId)) {
+    const t = a.kind === 'hl' ? a.note : a.kind === 'note' ? a.text : '';
+    if (t && t.includes(CONFLICT_MARK)) conflicts.push({ docId: l.docId, title: l.title, id: a.id, pageKey: a.pageKey, y: a.kind === 'note' ? a.y : (a.rects ? a.rects[0][1] : 0), text: t });
+  }
+  const dgConflicts = (await S.digest()).items.filter(it => str(it.note).includes(CONFLICT_MARK)).map(it => ({ id: it.id, title: it.src.name, text: it.note, quote: it.quote }));
+  return { linked, conflicts, dgConflicts };
+}
+
+export async function listSyncFiles() {
+  if (ANDROID) {
+    if (typeof N.syncListNames !== 'function') throw new Error('atualize o app Android (1.7)');
+    const r = await native('syncListNames');
+    if (!r.ok) throw new Error(r.msg);
+    return JSON.parse(r.msg);
+  }
+  const hnd = await dirHandleFor(false, true);
+  if (!hnd) return null;
+  const out = [];
+  for await (const [name, ent] of hnd.entries()) if (ent.kind === 'file') { const f = await ent.getFile(); out.push({ name, size: f.size, mtime: f.lastModified }); }
+  return out;
+}
+
+// arquivos que podem sair da pasta sem perder nada: cópias de conflito do Syncthing e arquivos de
+// documentos que não existem mais neste app (o reMarkable regrava os dele quando você abre o documento)
+export async function cleanupCandidates(files) {
+  const docs = new Set((await S.allDocs()).map(d => d.id));
+  const links = await db.kvGet('rmLinks', {});
+  const rmToApp = {};
+  for (const [app, rms] of Object.entries(links)) for (const rm of rms) rmToApp[rm] = app;
+  const out = [];
+  for (const f of files) {
+    const n = f.name;
+    if (/\.sync-conflict-/i.test(n)) { out.push({ name: n, why: 'cópia de conflito do Syncthing' }); continue; }
+    let m = /^app-([A-Za-z0-9_-]+)\.json$/.exec(n);
+    if (m) { if (!docs.has(m[1])) out.push({ name: n, why: 'documento apagado do app' }); continue; }
+    m = /^leitor-([A-Za-z0-9_-]+?)(--[A-Za-z0-9_-]+)?\.json$/.exec(n);
+    if (m && rmToApp[m[1]] && !docs.has(rmToApp[m[1]])) out.push({ name: n, why: 'documento apagado do app' });
+  }
+  return out;
+}
+
+export async function deleteSyncFiles(names) {
+  let n = 0;
+  if (ANDROID) {
+    for (const name of names) { const r = await native('syncDeleteFile', name); if (r.ok) n++; }
+  } else {
+    const hnd = await dirHandleFor(true, true);
+    if (!hnd) throw new Error('o navegador não deu permissão para mexer na pasta');
+    for (const name of names) { try { await hnd.removeEntry(name); n++; } catch (e) { console.warn(e); } }
+  }
+  const seen = Object.assign({}, await db.kvGet(KV_SEEN, {}));
+  for (const name of names) delete seen[name];
+  await db.kvSet(KV_SEEN, seen);
+  return n;
 }

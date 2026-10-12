@@ -1,10 +1,11 @@
-# Leitor de Pesquisa 1.6.0
+# Leitor de Pesquisa 1.7.0
 
 App de leitura de PDF para tablet, celular, Fold, DeX, computador e Boox (funciona no Chrome e pode ser instalado como app).
 Seus PDFs, anotações, áudios e o Digest ficam guardados no aparelho (no armazenamento do Chrome) e, se você ligar a sincronização, numa pasta do **seu** Google Drive.
 
 ## O que tem nesta versão
 
+- **Novo na 1.7.0:** com o RM2 Notas 0.13 e o RM2 Digest 0.4: **página em que você parou** nos dois sentidos; **Digest nos dois sentidos** (só o texto; figuras e áudios ficam aqui); **painel de sincronização** em Configurações ▸ reMarkable (documentos ligados com a hora do último recebimento e envio, notas editadas dos dois lados para revisar, limpeza da pasta).
 - **Novo na 1.6.0:** com o RM2 Notas 0.12: a escrita feita no app aparece no reMarkable como uma camada por cima da página (só para ver; botão “Traços do app” lá); nota à mão do reMarkable chega como página em branco com a escrita, logo depois da página da nota, com um link ✍ na nota; ligações entre documentos que estão nos dois lados vão e voltam. Botão ⟳ (Sincronizar com o reMarkable) na barra de cima do documento e atalho **Alt+S**. Lista de atalhos de teclado em Configurações ▸ Guia.
 - **Novo na 1.5.0:** com o RM2 Notas 0.11: **notas nos dois sentidos** (editar, criar ou apagar uma nota no app muda no reMarkable, e vice-versa; editada dos dois lados ao mesmo tempo, ficam os dois textos) e **a escrita à mão e o marca-texto do reMarkable chegam sozinhos** pela pasta do Syncthing, sem exportar PDF. Quando o mesmo trecho foi marcado com o marca-texto e com o “Destacar” do mod, fica um destaque só (o do mod). O app agora grava na pasta (arquivos app-*.json): no Windows o navegador pede permissão para editar a pasta; no Android, escolha a pasta de novo depois de instalar a 1.5.
 - **Novo na 1.4.1:** nota com citação que você moveu para dentro da página no reMarkable chega como adesiva no mesmo ponto (o trecho continua destacado); adesiva do app movida no reMarkable muda de lugar aqui também. Para corrigir uma nota que a 1.4.0 já trouxe, use Configurações ▸ reMarkable ▸ Ler tudo de novo. “Enviar ao reMarkable” lembra de escolher a pasta, se ainda não foi escolhida.

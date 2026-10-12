@@ -67,6 +67,7 @@ function dgNormItem(it) {
     if (dgStr(it.rmDoc) !== "") out.rmDoc = dgStr(it.rmDoc);
     if (dgStr(it.rmIn) !== "") out.rmIn = dgStr(it.rmIn);
     if (dgStr(it.rmSig) !== "") out.rmSig = dgStr(it.rmSig);
+    if (dgStr(it.rmId) !== "") out.rmId = dgStr(it.rmId);
     return out;
 }
 

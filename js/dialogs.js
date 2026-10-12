@@ -425,11 +425,60 @@ function rmPane() {
       h('button.pbtn', { type: 'button', onclick: async () => { out.textContent = 'Lendo a pasta…'; const r = await RS.receiveFromRm({ interactive: true }); out.textContent = r ? r.files + ' arquivo(s) com novidade.' : ''; } }, 'Receber agora'),
       h('button.sbtn', { type: 'button', onclick: async () => { out.textContent = 'Lendo tudo de novo…'; const r = await RS.receiveFromRm({ interactive: true, force: true }); out.textContent = r ? r.files + ' arquivo(s) lido(s).' : ''; } }, 'Ler tudo de novo'),
       h('button.dbtn', { type: 'button', onclick: async () => { await RS.forgetRmSyncFolder(); out.textContent = 'O app não lê mais essa pasta.'; render(); } }, 'Esquecer a pasta'));
+    if (name) renderPanel(RS);
+  };
+  // painel: documentos ligados, notas editadas dos dois lados, limpeza da pasta
+  const panel = h('div.rmpanel');
+  const ago = t => {
+    if (!t) return 'nunca';
+    const m = Math.round((Date.now() - t) / 60000);
+    return m < 1 ? 'agora' : m < 60 ? 'há ' + m + ' min' : m < 1440 ? 'há ' + Math.round(m / 60) + ' h' : new Date(t).toLocaleDateString('pt-BR');
+  };
+  const goTo = (docId, key, y) => { document.querySelectorAll('.modal-back').forEach(e => e.remove()); window.leitorApp.openDoc(docId, { key, y: Math.max(0, (y || 0) - 80) }); };
+  const renderPanel = async RS => {
+    clear(panel);
+    const ov = await RS.syncOverview();
+    panel.append(h('h3', 'Documentos ligados ao reMarkable (' + ov.linked.length + ')'));
+    if (!ov.linked.length) panel.append(h('p.muted', 'Nenhum ainda. Um documento fica ligado depois que você o abre no reMarkable (com o RM2 Notas) e o app recebe o primeiro arquivo dele.'));
+    else panel.append(h('table.pricetab', h('tr', h('th', 'Documento'), h('th', 'Recebido do reMarkable'), h('th', 'Enviado ao reMarkable'), h('th', '')),
+      ov.linked.map(l => h('tr', h('td', l.title + (l.rmDocs > 1 ? ' (' + l.rmDocs + ' cópias lá)' : '')), h('td', ago(l.in)), h('td', ago(l.out)),
+        h('td', h('button.sbtn', { type: 'button', onclick: () => goTo(l.docId) }, 'Abrir'))))));
+    const nc = ov.conflicts.length + ov.dgConflicts.length;
+    panel.append(h('h3', 'Editadas dos dois lados (' + nc + ')'));
+    if (!nc) panel.append(h('p.muted', 'Nenhuma. Quando a mesma nota muda aqui e no reMarkable antes de sincronizar, os dois textos ficam juntos, separados por “' + RS.CONFLICT_MARK + '”, e a nota aparece aqui para você revisar.'));
+    else {
+      panel.append(h('p.muted', 'Abra, deixe o texto como quer (apague a parte que sobrou) e salve: a versão final vai para o reMarkable.'));
+      panel.append(h('ul.rmconf', ov.conflicts.map(c => h('li', h('b', c.title + ': '), c.text.replace(/\s+/g, ' ').slice(0, 140) + (c.text.length > 140 ? '…' : ''), ' ',
+        h('button.sbtn', { type: 'button', onclick: () => goTo(c.docId, c.pageKey, c.y) }, 'Abrir'))),
+        ov.dgConflicts.map(c => h('li', h('b', 'Digest (' + c.title + '): '), c.text.replace(/\s+/g, ' ').slice(0, 140), ' ',
+          h('button.sbtn', { type: 'button', onclick: () => { document.querySelectorAll('.modal-back').forEach(e => e.remove()); window.leitorApp.showDigest(c.id); } }, 'Abrir')))));
+    }
+    panel.append(h('h3', 'Limpar a pasta'));
+    const res = h('p.muted', 'Tira da pasta as cópias de conflito do Syncthing e os arquivos de documentos que você apagou do app. Nada do que está em uso é apagado; o Syncthing apaga também no reMarkable e no outro aparelho.');
+    panel.append(res, h('div.btnrow', h('button.sbtn', { type: 'button', onclick: async () => {
+      try {
+        const files = await RS.listSyncFiles();
+        if (!files) { res.textContent = 'O navegador não deu permissão para ver a pasta.'; return; }
+        const cand = await RS.cleanupCandidates(files);
+        if (!cand.length) { res.textContent = 'Nada para limpar (' + files.length + ' arquivo(s) na pasta, todos em uso).'; return; }
+        const list = cand.slice(0, 12).map(c => '• ' + c.name + ' (' + c.why + ')').join('\n') + (cand.length > 12 ? '\n… e mais ' + (cand.length - 12) : '');
+        if (!(await confirmBox('Limpar a pasta do reMarkable', 'Apagar ' + cand.length + ' arquivo(s)?\n\n' + list, 'Apagar', true))) return;
+        const n = await RS.deleteSyncFiles(cand.map(c => c.name));
+        res.textContent = n + ' arquivo(s) apagado(s).';
+      } catch (e) { res.textContent = 'Não consegui: ' + e.message; }
+    } }, 'Ver o que pode sair…')));
   };
   render();
   return h('div',
-    h('p.muted', 'Com o RM2 Notas 0.11 no reMarkable e a pasta do Syncthing escolhida aqui: as notas vão e voltam sozinhas (editar, criar ou apagar de um lado muda o outro em menos de um minuto); a escrita à mão e o marca-texto do reMarkable chegam aqui como traços e destaques; os trechos do Digest feitos lá entram no Digest. Só valem documentos que saíram daqui por “Enviar ao reMarkable”. Se o mesmo trecho foi marcado com o marca-texto e com o “Destacar” do mod, fica só o do mod. A escrita que chega do reMarkable é trocada sempre que a página muda lá (edições dela feitas aqui não ficam). Com o RM2 Notas 0.12: o que você escreve aqui aparece no reMarkable como uma camada por cima da página (só para ver; o botão “Traços do app” de lá mostra e esconde); nota à mão do reMarkable vira uma página em branco com a escrita, logo depois da página da nota, e um link ✍ na nota leva até ela; ligações entre documentos que estão nos dois lados vão e voltam. Para não esperar o automático: botão ⟳ na barra de cima do documento, ou Alt+S.'),
-    info, btns, out,
+    h('p.muted', 'Com o RM2 Notas 0.13 e o RM2 Digest 0.4 no reMarkable e a pasta do Syncthing escolhida aqui (só para documentos que saíram daqui por “Enviar ao reMarkable”):'),
+    h('ul.muted',
+      h('li', 'notas vão e voltam: criar, editar, mover ou apagar de um lado muda o outro em menos de um minuto;'),
+      h('li', 'a escrita e o marca-texto do reMarkable chegam como traços e destaques (o mesmo trecho marcado também com “Destacar” fica um só); o que você escreve aqui aparece lá como uma camada só para ver;'),
+      h('li', 'nota à mão de lá vira uma página com a escrita, ligada à nota; ligações entre documentos vão e voltam;'),
+      h('li', 'o Digest vai e volta (só o texto: figuras e áudios ficam aqui);'),
+      h('li', 'o documento abre na página em que você parou do outro lado;'),
+      h('li', 'para não esperar: botão ⟳ na barra de cima do documento, ou Alt+S.')),
+    info, btns, out, panel,
     h('p.muted', 'Escolha aqui a pasta onde o Syncthing deste aparelho guarda esses arquivos (ex.: no Windows, Documentos\\leitor_remarkable_sync). O app precisa poder ler e gravar nela (para as notas irem ao reMarkable). Depois disso ele lê a pasta ao abrir, ao voltar para ele e a cada minuto, e grava alguns segundos depois de cada mudança. No navegador do computador, se ele pedir de novo a permissão, toque em “Receber agora” e permita.'),
     h('p.muted', 'Nota adesiva vira nota no mesmo ponto; nota com citação vira destaque no trecho (se o texto for achado na página) com a nota; nota que saiu daqui e foi editada lá atualiza a original. Se a mesma nota foi editada aqui e lá, os dois textos ficam. Apagada lá some daqui (se você não mexeu nela aqui); apagada aqui não volta.'));
 }
