@@ -188,21 +188,35 @@ export async function applyReturn(ret) {
       if (!fld || n.updated === n.extAt || a.rmIn === n.updated) continue;
       const cur = str(a[fld]);
       const appSame = String(a.updated) === str(n.extUpd) || (a.rmText !== undefined && cur === a.rmText);
+      let moved = false;
+      if (a.kind === 'note' && appSame && (Math.abs((+a.x || 0) - n.x) > 3 || Math.abs((+a.y || 0) - n.y) > 3)) { a.x = n.x; a.y = n.y; moved = true; }
       if (cur !== text) {
         if (appSame) { a[fld] = text; out.updated++; }
         else { a[fld] = cur + CONFLICT + text; out.conflicts++; }
-      }
+      } else if (moved) out.updated++;
       a.rmIn = n.updated; a.rmText = a[fld];
       puts.push(a);
       continue;
     }
     if (!text && !quote) continue;
     const id = 'rm' + hash(ret.rmDoc + '/' + n.id);
-    seen.add(id);
+    seen.add(id); seen.add(id + 'q');
     if (isText) { dgNotes.push({ id: 'Drm' + hash(ret.rmDoc + '/' + n.id), quote, note: text, created: n.created, updated: n.updated }); continue; }
+    const p = list[n.page];
+    // nota com citação que foi movida, no reMarkable, para dentro da página (fora da margem): o trecho
+    // fica destacado e a nota fica onde você a pôs lá, como adesiva
+    const placed = !!(p && text && quote && n.x > 40 && n.x < p.w - 40);
+    const sticky = (x, y, t) => ({ id, kind: 'note', docId: doc.id, pageKey: p.key, x: Math.max(6, Math.min(p.w - 20, +x || 0)), y: Math.max(6, Math.min(p.h - 20, +y || 0)), text: t, rmDoc: ret.rmDoc, rmIn: n.updated, rmText: t, created: Date.now() });
     const a = anns.find(x => x.id === id);
     if (a) {
       const fld = textField(a);
+      // 1.4.0 guardava esta nota no destaque; agora ela vai para o ponto em que está no reMarkable
+      if (placed && a.kind === 'hl' && str(a.note) === str(a.rmText)) {
+        puts.push(Object.assign({}, a, { id: id + 'q', note: '', rmText: '' }));
+        puts.push(sticky(n.x, n.y, text));
+        out.updated++;
+        continue;
+      }
       if (!fld || a.rmIn === n.updated) continue;
       const cur = str(a[fld]);
       if (cur !== text) {
@@ -215,20 +229,17 @@ export async function applyReturn(ret) {
       continue;
     }
     if (tombs[id]) continue;   // apagada aqui: não volta
-    const p = list[n.page];
     if (!p) { out.skipped++; continue; }
     let made = null;
     if (quote) {
       const pt = await pageText(p);
       const rects = pt && quoteRects(pt.items, pt.toView, quote, n.y);
-      if (rects) made = { id, kind: 'hl', docId: doc.id, pageKey: p.key, rects, text: quote, note: text, cat: str(n.cat), style: 'highlight', rmDoc: ret.rmDoc, rmIn: n.updated, rmText: text };
+      if (rects && placed) {
+        if (!tombs[id + 'q']) puts.push({ id: id + 'q', kind: 'hl', docId: doc.id, pageKey: p.key, rects, text: quote, note: '', cat: str(n.cat), style: 'highlight', rmDoc: ret.rmDoc, rmIn: n.updated, rmText: '', created: Date.now() });
+        made = sticky(n.x, n.y, text);
+      } else if (rects) made = { id, kind: 'hl', docId: doc.id, pageKey: p.key, rects, text: quote, note: text, cat: str(n.cat), style: 'highlight', rmDoc: ret.rmDoc, rmIn: n.updated, rmText: text };
     }
-    if (!made) {
-      const t = text || ('“' + quote + '”');
-      const x = Math.max(6, Math.min(p.w - 20, +n.x || 0)), y = Math.max(6, Math.min(p.h - 20, +n.y || 0));
-      made = { id, kind: 'note', docId: doc.id, pageKey: p.key, x, y, text: quote && text ? '“' + quote + '”\n\n' + text : t, rmDoc: ret.rmDoc, rmIn: n.updated };
-      made.rmText = made.text;
-    }
+    if (!made) made = sticky(n.x, n.y, quote && text ? '“' + quote + '”\n\n' + text : (text || ('“' + quote + '”')));
     made.created = Date.now();
     puts.push(made); out.added++;
   }
