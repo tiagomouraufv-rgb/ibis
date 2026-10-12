@@ -47,7 +47,7 @@ function dgNormItem(it) {
     var id = dgStr(it.id);
     if (id === "") return null;
     var src = (it.src && typeof it.src === "object") ? it.src : {};
-    return {
+    var out = {
         id: id,
         created: dgStr(it.created),
         updated: dgStr(it.updated),
@@ -63,6 +63,11 @@ function dgNormItem(it) {
         images: (dgArr(it.images) || []).map(dgStr).filter(function(x) { return x !== ""; }),
         pageKeyEnd: dgStr(it.pageKeyEnd)
     };
+    // vindos do reMarkable pela pasta do Syncthing (rmsync.js)
+    if (dgStr(it.rmDoc) !== "") out.rmDoc = dgStr(it.rmDoc);
+    if (dgStr(it.rmIn) !== "") out.rmIn = dgStr(it.rmIn);
+    if (dgStr(it.rmSig) !== "") out.rmSig = dgStr(it.rmSig);
+    return out;
 }
 
 // área: caminho do nível 1 para baixo, ex. ["Física", "Óptica", "Pinças ópticas"]

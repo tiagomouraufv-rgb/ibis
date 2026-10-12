@@ -374,9 +374,10 @@ export async function openSettings(tab) {
       h('p.muted', 'Seus PDFs, anotações, áudios e o Digest ficam guardados neste aparelho. Faça cópias de segurança de vez em quando: se os dados do navegador/app forem apagados, eles se perdem.'),
       h('div.btnrow', h('button.sbtn', { type: 'button', onclick: () => backup() }, 'Fazer cópia de segurança (.zip)'), h('button.sbtn', { type: 'button', onclick: () => restore() }, 'Restaurar cópia…'))),
     sync: syncPane(inp, f),
+    rm: rmPane(),
     guia: guideNodes(),
   };
-  const tabs = [['geral', 'Geral'], ['sync', 'Sincronização'], ['ia', 'IA'], ['obsidian', 'Obsidian'], ['backup', 'Cópia'], ['guia', 'Guia']];
+  const tabs = [['geral', 'Geral'], ['sync', 'Sincronização'], ['rm', 'reMarkable'], ['ia', 'IA'], ['obsidian', 'Obsidian'], ['backup', 'Cópia'], ['guia', 'Guia']];
   const tabRow = h('div.tabsrow.inmodal', { role: 'tablist' });
   const holder = h('div.setpane');
   const show = id => {
@@ -404,6 +405,33 @@ function priceTable() {
     h('table.pricetab', h('tr', h('th', 'Modelo'), h('th', 'Explicar um trecho'), h('th', 'Resumo das anotações'), h('th', 'Livro de 300 p. por capítulo')),
       rows.map(([m, l]) => h('tr', h('td', l), h('td', est(m, 2000, 600)), h('td', est(m, 10000, 1500)), h('td', est(m, 150000, 16000))))),
     h('p.muted', 'Estimativas com preços de referência de outubro de 2026 (US$ por milhão de tokens: Haiku 4.5 1/5, Sonnet 5.5 2/10, Opus 5.5 4/20; Gemini Flash ~0,75/3,75). Explicar ≈ 2 mil tokens de entrada e 600 de saída; resumo ≈ 10 mil e 1,5 mil. O Gemini tem também um plano gratuito com limites. Confira os preços atuais nos sites da Anthropic e do Google. Depois de cada resposta, o app mostra o custo aproximado daquela consulta.'));
+}
+
+// Aba reMarkable: pasta do Syncthing onde o RM2 Notas grava as notas e o Digest feitos lá
+function rmPane() {
+  const info = h('p');
+  const out = h('p.muted');
+  const btns = h('div.btnrow');
+  const render = async () => {
+    const RS = await import('./rmsync.js');
+    clear(btns);
+    if (!RS.rmSyncSupported()) { info.textContent = 'Este navegador não deixa ler pastas. Use o app Android, ou o Chrome/Edge no computador.'; return; }
+    const name = await RS.rmSyncFolderName();
+    info.textContent = '';
+    info.append(h('b', 'Pasta: '), name || 'nenhuma escolhida');
+    const pick = async () => { const n = await RS.pickRmSyncFolder(); if (n) { out.textContent = 'Pasta escolhida: ' + n + '. Recebendo…'; const r = await RS.receiveFromRm({ interactive: true, force: true }); out.textContent = r ? 'Pronto. ' + r.files + ' arquivo(s) lido(s).' : ''; } render(); };
+    btns.append(h('button.' + (name ? 'sbtn' : 'pbtn'), { type: 'button', onclick: pick }, name ? 'Trocar a pasta…' : 'Escolher a pasta…'));
+    if (name) btns.append(
+      h('button.pbtn', { type: 'button', onclick: async () => { out.textContent = 'Lendo a pasta…'; const r = await RS.receiveFromRm({ interactive: true }); out.textContent = r ? r.files + ' arquivo(s) com novidade.' : ''; } }, 'Receber agora'),
+      h('button.sbtn', { type: 'button', onclick: async () => { out.textContent = 'Lendo tudo de novo…'; const r = await RS.receiveFromRm({ interactive: true, force: true }); out.textContent = r ? r.files + ' arquivo(s) lido(s).' : ''; } }, 'Ler tudo de novo'),
+      h('button.dbtn', { type: 'button', onclick: async () => { await RS.forgetRmSyncFolder(); out.textContent = 'O app não lê mais essa pasta.'; render(); } }, 'Esquecer a pasta'));
+  };
+  render();
+  return h('div',
+    h('p.muted', 'Notas digitadas, destaques com nota e trechos do Digest feitos no reMarkable (RM2 Notas 0.10 e RM2 Digest) voltam para cá sozinhos, pela pasta que o Syncthing sincroniza com o reMarkable (no reMarkable: /home/root/leitor-sync). Só valem documentos que saíram daqui por “Enviar ao reMarkable”.'),
+    info, btns, out,
+    h('p.muted', 'Escolha aqui a pasta onde o Syncthing deste aparelho guarda esses arquivos (ex.: no Windows, Documentos\\leitor_remarkable_sync). Depois disso o app lê a pasta ao abrir, ao voltar para ele e a cada minuto. No navegador do computador, se ele pedir de novo a permissão, toque em “Receber agora”.'),
+    h('p.muted', 'Nota adesiva vira nota no mesmo ponto; nota com citação vira destaque no trecho (se o texto for achado na página) com a nota; nota que saiu daqui e foi editada lá atualiza a original. Se a mesma nota foi editada aqui e lá, os dois textos ficam. Apagada lá some daqui (se você não mexeu nela aqui); apagada aqui não volta.'));
 }
 
 // Aba Sincronização (Google Drive)
@@ -673,6 +701,7 @@ function guideNodes() {
       ul('Exportar gera o PDF com as marcações: “Editável” (outras pessoas podem ver e mexer; ao reabrir no app, tudo volta editável) ou “Achatado” (aparece igual em qualquer leitor).',
         'Enviar ao Obsidian: “Enviar esta nota” abre o app do Obsidian (informe o nome do cofre na aba Obsidian); “Pacote .zip” traz todas as notas, o Digest e os áudios para extrair no cofre.',
         'Enviar ao reMarkable (menu ⋯ do documento na biblioteca, ou Exportar): gera um PDF para o leitor nativo do reMarkable. Destaques, escrita e figuras vão desenhados; destaque com nota sai destacado e sublinhado; links para páginas do mesmo PDF continuam funcionando. As notas digitadas e os trechos do Digest vão escondidos no PDF: com o RM2 Notas 0.9 no reMarkable, ao abrir o documento lá elas aparecem sozinhas (nota de destaque na margem, nota adesiva no mesmo ponto) e os trechos vão para o RM2 Digest 0.3. Textos viram PDF (dá para selecionar e destacar o texto no reMarkable). Escolha o app do reMarkable no menu de compartilhar ou use “Salvar o PDF”.',
+        'Notas feitas no reMarkable (RM2 Notas 0.10): voltam sozinhas pela pasta do Syncthing. Escolha a pasta em Configurações > reMarkable (uma vez em cada aparelho).',
         'Trazer do reMarkable: exporte do reMarkable o PDF de um documento que você mandou por “Enviar ao reMarkable” (e-mail ou app do computador) e abra-o aqui (Abrir PDF, ou Abrir com… no Android). O app pergunta se quer trazer a escrita e os destaques feitos lá para o documento original. Páginas inseridas no reMarkable impedem isso (aí importe como documento novo).')),
     sec('Cópia de segurança',
       ul('Tudo fica guardado neste aparelho (e no seu Google Drive, se a sincronização estiver ligada). Use a aba Cópia de vez em quando para gerar um .zip extra.',

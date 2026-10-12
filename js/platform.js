@@ -20,6 +20,14 @@ export function b64ToBytes(b64) {
   return u;
 }
 
+// Chamada a uma função da ponte que responde por window.__nativeCb(id, ok, msg)
+export function nativeCall(fn, ...args) {
+  const id = String(++seq);
+  const p = new Promise(r => { cbs[id] = r; });
+  N[fn](id, ...args);
+  return p;
+}
+
 // Salvar: abre o "Salvar como" do Android (Downloads, Drive, OneDrive…). Resolve {ok, msg}.
 export async function nativeSave(blob, name, mime) {
   const id = String(++seq);

@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 class App {
   constructor() {
@@ -65,6 +65,7 @@ class App {
     this.indexAll();
     document.getElementById('ver').textContent = 'v' + VERSION + (isAndroidApp ? ' · Android' : '');
     startAutoSync().catch(e => console.warn(e));
+    import('./rmsync.js').then(m => m.startRmAutoReceive()).catch(e => console.warn(e));
     this.initWindows();
     bindDrop();
     initFastPen(this);
