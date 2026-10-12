@@ -33,6 +33,7 @@ export async function pickRmSyncFolder() {
     const r = await native('syncPickFolder');
     if (!r.ok) { if (r.msg !== 'Cancelado.') toast(r.msg, 5000); return ''; }
     await db.kvSet(KV_SEEN, {});
+    S.emit('rmSyncFolder', r.msg);
     return r.msg;
   }
   if (typeof window.showDirectoryPicker !== 'function') { toast('Este navegador não deixa escolher pastas. Use o Chrome ou o Edge.', 6000); return ''; }
@@ -41,6 +42,7 @@ export async function pickRmSyncFolder() {
   catch (e) { return ''; }
   await db.kvSet(KV_DIR, hnd);
   await db.kvSet(KV_SEEN, {});
+  S.emit('rmSyncFolder', hnd.name);
   return hnd.name;
 }
 
@@ -48,6 +50,7 @@ export async function forgetRmSyncFolder() {
   if (ANDROID) { try { N.syncForget(); } catch (e) { } }
   await db.kvSet(KV_DIR, null);
   await db.kvSet(KV_SEEN, {});
+  S.emit('rmSyncFolder', '');
 }
 
 // [{name, text}] ou null (sem pasta ou sem permissão). interactive: pode pedir permissão (precisa de um toque)
@@ -162,7 +165,7 @@ export async function applyReturn(ret) {
   if (!isText) {
     const { openPdf, pageList } = await import('./pdfdoc.js');
     hd = await openPdf(doc);
-    list = pageList(doc, hd);
+    list = rmPages(doc, pageList(doc, hd));
   }
   const anns = isText ? [] : (await S.annots(doc.id)).slice();
   const puts = [], dels = [], dgNotes = [];
@@ -216,9 +219,43 @@ export async function applyReturn(ret) {
     puts.push(a);
     return true;
   };
+  // nota à mão: um link na página da nota que leva à página com a escrita (que chega no arquivo da página)
+  const handNote = n => {
+    const id = 'rm' + hash(ret.rmDoc + '/' + n.id);
+    seen.add(id);
+    const p = list[n.page];
+    if (!p || tombs[id]) return;
+    const blank = 'rmh' + hash(ret.rmDoc + '/' + str(n.target));
+    const x = Math.max(4, Math.min(p.w - 22, +n.x || 0)), y = Math.max(4, Math.min(p.h - 22, +n.y || 0));
+    const label = str(n.text).trim() ? '✍ ' + str(n.text).trim() : '✍ Nota à mão';
+    const a = anns.find(q => q.id === id);
+    const want = { id, kind: 'link', docId: doc.id, pageKey: p.key, rects: [[x - 9, y - 9, 18, 18]], text: label, target: { type: 'page', docId: doc.id, pageKey: 'b' + blank, y: 0 }, targetLabel: 'Nota à mão (reMarkable)', rmDoc: ret.rmDoc, rmHandLink: true };
+    if (a && a.kind === 'link' && JSON.stringify([a.rects, a.text, a.target]) === JSON.stringify([want.rects, want.text, want.target])) return;
+    if (a) want.created = a.created; else out.added++;
+    puts.push(want);
+  };
+  // ligações feitas no reMarkable para outros documentos que também estão no app
+  const linkNotes = n => {
+    if (n.ext) { const src = anns.find(q => q.id === n.ext); if (src && src.kind === 'link') return; }   // a ligação nasceu aqui
+    const p = list[n.page];
+    if (!p) return;
+    (n.links || []).forEach((l, i) => {
+      if (!l || !l.app) return;
+      const id = 'rl' + hash(ret.rmDoc + '/' + n.id + '/' + l.app);
+      seen.add(id);
+      if (tombs[id]) return;
+      const x = Math.max(4, Math.min(p.w - 22, (+n.x || 0) + 12 + 20 * i)), y = Math.max(4, Math.min(p.h - 22, +n.y || 0));
+      const want = { id, kind: 'link', docId: doc.id, pageKey: p.key, rects: [[x - 8, y - 8, 16, 16]], text: '→ ' + str(l.name), target: { type: 'page', docId: l.app, pageKey: 'p1', y: 0 }, targetLabel: str(l.name), rmDoc: ret.rmDoc, rmLink: true };
+      const a = anns.find(q => q.id === id);
+      if (a && JSON.stringify([a.rects, a.text, a.target]) === JSON.stringify([want.rects, want.text, want.target])) return;
+      if (a) want.created = a.created; else out.added++;
+      puts.push(want);
+    });
+  };
   for (const x of (ret.others || [])) { if (x.ext) seen.add(x.ext); if (x.id) { const id0 = 'rm' + hash(ret.rmDoc + '/' + x.id); seen.add(id0); seen.add(id0 + 'q'); } }
   for (const n of ret.notes) {
     const text = str(n.text), quote = str(n.quote);
+    if (!isText) linkNotes(n);
     if (n.ext) {
       // nota que saiu do app (ou que voltou dele): a original é esta anotação
       seen.add(n.ext);
@@ -226,6 +263,7 @@ export async function applyReturn(ret) {
       if (a) merge(a, n, text);
       continue;
     }
+    if (n.kind === 'hand') { if (!isText) handNote(n); continue; }
     if (!text && !quote) continue;
     const id = 'rm' + hash(ret.rmDoc + '/' + n.id);
     seen.add(id); seen.add(id + 'q');
@@ -269,7 +307,8 @@ export async function applyReturn(ret) {
   for (const a of anns) {
     const linked = (a.rs && a.rs.doc === ret.rmDoc) || a.rmDoc === ret.rmDoc;
     if (!linked || seen.has(a.id) || puts.includes(a)) continue;
-    if (!a.rs && !String(a.id).startsWith('rm')) continue;
+    if (!a.rs && !String(a.id).startsWith('rm') && !String(a.id).startsWith('rl')) continue;
+    if (a.rmHandLink || a.rmLink) { dels.push(a); out.removed++; continue; }
     const fld = textField(a);
     const base = a.rs ? str(a.rs.base) : str(a.rmText);
     if (fld && str(a[fld]) === base) { dels.push(a); out.removed++; }
@@ -418,7 +457,9 @@ export async function applyInk(o) {
   const V = await import('./rmv6.js');
   const { openPdf, pageList } = await import('./pdfdoc.js');
   const hd = await openPdf(doc);
-  const p = pageList(doc, hd)[o.page];
+  let p;
+  if (o.hand) p = await handPage(doc, hd, pageList, o);
+  else p = rmPages(doc, pageList(doc, hd))[o.page];
   if (!p) return out;
   const tag = o.rmDoc + '/' + o.key;
   const parsed = o.rm ? V.parseRmV6(V.b64ToU8(o.rm)) : { lines: [], glyphs: [] };
@@ -461,19 +502,31 @@ async function dirHandleFor(write, interactive) {
 }
 
 // conteúdo do arquivo do app para um documento (puro: testável)
-export function appNotesFor(doc, list, anns, prevSent, gonePrev, nowMs) {
+export function appNotesFor(doc, list, anns, prevSent, gonePrev, nowMs, docNames) {
   const idx = new Map(list.map((p, i) => [p.key, i]));
-  const notes = [];
+  const notes = [], ink = [];
+  let label = '';
   const sent = {};
   for (const a of anns) {
     if (a.rmNative || a.rmInk) continue;
     let kind, x, y, text, quote = '';
     if (a.kind === 'note') { if (!str(a.text).trim() && !a.rs) continue; kind = 'sticky'; x = +a.x || 0; y = +a.y || 0; text = str(a.text); }
     else if (a.kind === 'hl') { if (!str(a.note).trim() && !a.rs) continue; kind = 'hl'; x = a.rects[0][0]; y = a.rects[0][1] + a.rects[0][3] / 2; text = str(a.note); quote = str(a.text); }
+    else if (a.kind === 'link' && !a.rmHandLink && !a.rmLink && a.target && a.target.type === 'page' && a.target.docId && a.target.docId !== doc.id && a.rects && a.rects.length) {
+      kind = 'link'; x = a.rects[0][0]; y = a.rects[0][1] + a.rects[0][3] / 2; quote = str(a.text);
+      label = str(a.targetLabel) || (docNames && docNames[a.target.docId]) || 'outro documento';
+      text = 'Ligação: ' + label;
+    }
+    else if (a.kind === 'ink' && !a.rm && !a.fill && Array.isArray(a.pts) && a.pts.length > 1) {
+      const pg = idx.has(a.pageKey) ? idx.get(a.pageKey) : -1;
+      if (pg >= 0) ink.push({ page: pg, color: str(a.color) || '#16191D', width: +a.width || 1.5, marker: a.tool === 'marker', pts: a.pts.flatMap(q => [Math.round(q[0] * 10) / 10, Math.round(q[1] * 10) / 10]) });
+      continue;
+    }
     else continue;
     const page = idx.has(a.pageKey) ? idx.get(a.pageKey) : -1;
     if (page < 0) continue;
     const n = { ext: a.id, kind, page, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, text, quote, cat: str(a.cat), updated: String(a.updated || a.created || '') };
+    if (kind === 'link') { n.label = label; n.target = { app: a.target.docId }; }
     if (a.rs) { n.rm = { doc: a.rs.doc, id: a.rs.id }; n.rmIn = str(a.rs.in); }
     notes.push(n);
     sent[a.id] = { base: a.rs ? str(a.rs.base) : text, rm: n.rm || null };
@@ -485,7 +538,7 @@ export function appNotesFor(doc, list, anns, prevSent, gonePrev, nowMs) {
     if (prevSent[id].rm) g.rm = prevSent[id].rm;
     gone.push(g);
   }
-  return { obj: { app: 'leitor-pesquisa', kind: 'app-notes', v: 1, doc: { id: doc.id, name: doc.name }, notes, gone: gone.map(g => { const c = Object.assign({}, g); delete c.at; return c; }) }, sent, gone };
+  return { obj: { app: 'leitor-pesquisa', kind: 'app-notes', v: 1, doc: { id: doc.id, name: doc.name }, notes, ink, gone: gone.map(g => { const c = Object.assign({}, g); delete c.at; return c; }) }, sent, gone };
 }
 
 let writeWarned = false;
@@ -495,11 +548,12 @@ export async function writeAppFile(docId, opts = {}) {
   const doc = await S.getDoc(docId);
   if (!doc || doc.kind === 'notebook' || doc.kind === 'text') return false;
   const { openPdf, pageList } = await import('./pdfdoc.js');
-  const list = pageList(doc, await openPdf(doc));
+  const list = rmPages(doc, pageList(doc, await openPdf(doc)));
   const st = Object.assign({ sent: {}, gone: [], last: '' }, await db.kvGet('rmOut:' + docId, {}));
-  const r = appNotesFor(doc, list, await S.annots(docId), st.sent, st.gone, Date.now());
+  const names = {}; for (const d of await S.allDocs()) names[d.id] = S.docTitle(d);
+  const r = appNotesFor(doc, list, await S.annots(docId), st.sent, st.gone, Date.now(), names);
   const text = JSON.stringify(r.obj);
-  if (text === st.last) return true;
+  if (text === st.last && !opts.force) return true;
   const name = 'app-' + String(docId).replace(/[^A-Za-z0-9_-]/g, '') + '.json';
   try {
     if (ANDROID) {
@@ -533,4 +587,36 @@ export function startRmAutoWrite() {
       try { await writeAppFile(id, { quiet: true }); } catch (e) { console.warn(e); }
     }, 2500));
   });
+}
+
+// páginas como o reMarkable as conhece: sem as páginas de nota à mão que vieram de lá (elas ficam
+// no fim da lista do reMarkable, não no meio)
+export function rmPages(doc, list) {
+  const hand = new Set((doc.blanks || []).filter(b => b.rmHand).map(b => 'b' + b.id));
+  return list.filter(p => !hand.has(p.key));
+}
+// página de nota à mão: uma página em branco deste documento, logo depois da página da nota
+async function handPage(doc, hd, pageList, o) {
+  const id = 'rmh' + hash(o.rmDoc + '/' + o.key);
+  doc.blanks = doc.blanks || [];
+  if (!doc.blanks.some(b => b.id === id)) {
+    const base = rmPages(doc, pageList(doc, hd))[o.hand.after];
+    const after = base && base.kind === 'pdf' ? base.n : hd.pdf.numPages;
+    doc.blanks.push({ id, after, w: +(o.pw || 447.26).toFixed(2), h: +(o.ph || 596.34).toFixed(2), created: Date.now(), rmHand: true, rmDoc: o.rmDoc, rmKey: o.key });
+    await S.saveDoc(doc);
+    S.emit('docRemote', doc);
+  }
+  return pageList(doc, hd).find(p => p.key === 'b' + id);
+}
+
+// botão / atalho "Sincronizar com o reMarkable": recebe tudo e grava o arquivo de cada documento ligado
+export async function syncRmNow() {
+  if (!rmSyncSupported() || !(await rmSyncFolderName())) { toast('Escolha antes a pasta do reMarkable (Configurações ▸ reMarkable).', 5000); return null; }
+  toast('Sincronizando com o reMarkable…', 15000);
+  const r = await receiveFromRm({ interactive: true });
+  const links = await db.kvGet('rmLinks', {});
+  let ok = true;
+  for (const id of Object.keys(links)) { try { await writeAppFile(id, { interactive: true, force: true }); } catch (e) { ok = false; } }
+  if (r && !(r.added + r.updated + r.removed + r.conflicts + r.digest + (r.ink || 0))) toast(ok ? 'Sincronizado: nada novo do reMarkable; o que mudou aqui já está na pasta.' : 'Recebido; não consegui gravar na pasta.', 4500);
+  return r;
 }

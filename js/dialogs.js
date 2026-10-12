@@ -428,7 +428,7 @@ function rmPane() {
   };
   render();
   return h('div',
-    h('p.muted', 'Com o RM2 Notas 0.11 no reMarkable e a pasta do Syncthing escolhida aqui: as notas vão e voltam sozinhas (editar, criar ou apagar de um lado muda o outro em menos de um minuto); a escrita à mão e o marca-texto do reMarkable chegam aqui como traços e destaques; os trechos do Digest feitos lá entram no Digest. Só valem documentos que saíram daqui por “Enviar ao reMarkable”. Se o mesmo trecho foi marcado com o marca-texto e com o “Destacar” do mod, fica só o do mod. A escrita que chega do reMarkable é trocada sempre que a página muda lá (edições dela feitas aqui não ficam).'),
+    h('p.muted', 'Com o RM2 Notas 0.11 no reMarkable e a pasta do Syncthing escolhida aqui: as notas vão e voltam sozinhas (editar, criar ou apagar de um lado muda o outro em menos de um minuto); a escrita à mão e o marca-texto do reMarkable chegam aqui como traços e destaques; os trechos do Digest feitos lá entram no Digest. Só valem documentos que saíram daqui por “Enviar ao reMarkable”. Se o mesmo trecho foi marcado com o marca-texto e com o “Destacar” do mod, fica só o do mod. A escrita que chega do reMarkable é trocada sempre que a página muda lá (edições dela feitas aqui não ficam). Com o RM2 Notas 0.12: o que você escreve aqui aparece no reMarkable como uma camada por cima da página (só para ver; o botão “Traços do app” de lá mostra e esconde); nota à mão do reMarkable vira uma página em branco com a escrita, logo depois da página da nota, e um link ✍ na nota leva até ela; ligações entre documentos que estão nos dois lados vão e voltam. Para não esperar o automático: botão ⟳ na barra de cima do documento, ou Alt+S.'),
     info, btns, out,
     h('p.muted', 'Escolha aqui a pasta onde o Syncthing deste aparelho guarda esses arquivos (ex.: no Windows, Documentos\\leitor_remarkable_sync). O app precisa poder ler e gravar nela (para as notas irem ao reMarkable). Depois disso ele lê a pasta ao abrir, ao voltar para ele e a cada minuto, e grava alguns segundos depois de cada mudança. No navegador do computador, se ele pedir de novo a permissão, toque em “Receber agora” e permita.'),
     h('p.muted', 'Nota adesiva vira nota no mesmo ponto; nota com citação vira destaque no trecho (se o texto for achado na página) com a nota; nota que saiu daqui e foi editada lá atualiza a original. Se a mesma nota foi editada aqui e lá, os dois textos ficam. Apagada lá some daqui (se você não mexeu nela aqui); apagada aqui não volta.'));
@@ -538,6 +538,21 @@ function guideNodes() {
         'Busque pelo nome em português ou inglês, ou pela fórmula (Si, Ge, SiO2, água, ouro, MEH-PPV…). Escolha o material e o conjunto de dados (artigo e faixa de λ).',
         'Digite o λ (ou toque num laser: 405, 532, 633, 785, 1064…, ou no gráfico) e veja n, k, ε₁, ε₂, absorção α, profundidade de penetração, reflexão normal, índice de grupo e λ no material.',
         'Os dados vêm do banco público do refractiveindex.info (no GitHub) e ficam guardados no aparelho. Uma vez por semana (com internet) o app confere a fonte e atualiza o catálogo e os materiais que você já usou; há também “Atualizar agora”. “Abrir no refractiveindex.info” abre a página completa do site no navegador.')),
+    sec('Atalhos de teclado',
+      h('table.pricetab', [
+        ['Alt+S', 'Sincronizar com o reMarkable agora (o mesmo que o botão ⟳ da barra de cima)'],
+        ['Ctrl+Z', 'Desfazer'],
+        ['Ctrl+Shift+Z ou Ctrl+Y', 'Refazer'],
+        ['Ctrl+G', 'Ir para uma página'],
+        ['Delete ou Backspace', 'Apagar o que está selecionado (traços, forma, imagem…)'],
+        ['Page Down / Page Up', 'Próxima / página anterior (no e-ink também as setas e a barra de espaço)'],
+        ['Alt+N', 'Índice de refração (refractiveindex.info) do texto selecionado'],
+        ['Ctrl+B / Ctrl+I', 'Negrito / itálico (no texto e nas caixas de nota)'],
+        ['Tab', 'Recuo (no texto e nas caixas de nota)'],
+        ['Esc', 'Concluir a edição do bloco de texto ou da caixa de nota'],
+        ['Ctrl+Enter', 'Enviar a pergunta no painel de IA'],
+        ['Botões de volume (app Android, e-ink)', 'Virar a página, se ligado em Configurações ▸ Geral'],
+      ].map(([k, d]) => h('tr', h('td', h('b', k)), h('td', d))))),
     sec('Desfazer e refazer',
       ul('Os botões ↶ ↷ (e Ctrl+Z, Ctrl+Shift+Z ou Ctrl+Y no teclado) desfazem passo a passo tudo o que você mudou no documento: traços, destaques, notas, caixas de texto, imagens, formas, páginas inseridas ou apagadas, margens, marcadores e o texto.',
         'Cada documento tem a sua própria lista (desfazer num não mexe no outro). A lista vale enquanto o app está aberto.')),

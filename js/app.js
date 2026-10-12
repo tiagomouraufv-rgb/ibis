@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 
 class App {
   constructor() {
@@ -77,6 +77,12 @@ class App {
     // Alt+N: índice de refração (refractiveindex.info) do texto selecionado, ou a busca vazia
     // índice de refração: confere a fonte uma vez por semana (só se você já usou)
     setTimeout(() => import('./nkdb.js').then(m => m.weeklyUpdate()).catch(() => {}), 30000);
+    // Alt+S: sincronizar com o reMarkable
+    document.addEventListener('keydown', async e => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyS') return;
+      e.preventDefault();
+      (await import('./rmsync.js')).syncRmNow();
+    });
     document.addEventListener('keydown', async e => {
       if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyN') return;
       e.preventDefault();

@@ -149,10 +149,15 @@ export class Reader {
       this.articleBtn = hideTb(btn('columns', '', () => this.openArticle(), { title: 'Modo artigo: uma coluna do PDF por vez, na largura da tela', iconOnly: true, cls: 'ibtn notnb' })),
       hideTb(this.modeBtn),
       hideTb(this.recBtn),
+      hideTb(this.rmSyncBtn = btn('sync', '', async () => { this.rmSyncBtn.disabled = true; try { await (await import('./rmsync.js')).syncRmNow(); } finally { this.rmSyncBtn.disabled = false; } }, { title: 'Sincronizar com o reMarkable agora (Alt+S)', iconOnly: true })),
       hideTb(btn('digest', 'Digest', () => this.app.showDigest(), { cls: 'sbtn hide-sm' })),
       btn('upload', 'Exportar', () => NB.isNotebook(this.doc) ? openNotebookExport(this.doc) : openExportDialog(this.doc), { cls: 'pbtn' }),
       btn('more', '', e => this.moreMenu(e), { title: 'Mais opções', iconOnly: true }),
     );
+    // o botão do reMarkable só aparece depois que a pasta do Syncthing foi escolhida
+    this.rmSyncBtn.style.display = 'none';
+    import('./rmsync.js').then(async RS => { if (RS.rmSyncSupported() && await RS.rmSyncFolderName()) this.rmSyncBtn.style.display = ''; }).catch(() => {});
+    S.on('rmSyncFolder', name => { this.rmSyncBtn.style.display = name ? '' : 'none'; });
     // barra de ferramentas (lateral)
     this.toolBtns = {};
     const tb = (id, ic, label) => { const b = btn(ic, '', () => this.setTool(id), { title: label, iconOnly: true, cls: 'ibtn tool' }); this.toolBtns[id] = b; return b; };
