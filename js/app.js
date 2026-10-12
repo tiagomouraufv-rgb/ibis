@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 
 class App {
   constructor() {

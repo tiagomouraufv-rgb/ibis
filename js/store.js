@@ -181,10 +181,10 @@ export async function delAnnot(a, opts = {}) {
 }
 
 // apaga vários traços como uma só ação de desfazer
-export async function delAnnots(arr) {
+export async function delAnnots(arr, opts = {}) {
   if (!arr.length) return;
   for (const a of arr) await rawDel(a);
-  pushStep(arr[0].docId, { t: 'ann', group: arr.map(a => ({ before: clone(a), after: null })), at: Date.now() });
+  if (!opts.noUndo) pushStep(arr[0].docId, { t: 'ann', group: arr.map(a => ({ before: clone(a), after: null })), at: Date.now() });
   emit('annots', { docId: arr[0].docId });
 }
 

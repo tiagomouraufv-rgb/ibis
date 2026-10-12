@@ -428,9 +428,9 @@ function rmPane() {
   };
   render();
   return h('div',
-    h('p.muted', 'Notas digitadas, destaques com nota e trechos do Digest feitos no reMarkable (RM2 Notas 0.10 e RM2 Digest) voltam para cá sozinhos, pela pasta que o Syncthing sincroniza com o reMarkable (no reMarkable: /home/root/leitor-sync). Só valem documentos que saíram daqui por “Enviar ao reMarkable”.'),
+    h('p.muted', 'Com o RM2 Notas 0.11 no reMarkable e a pasta do Syncthing escolhida aqui: as notas vão e voltam sozinhas (editar, criar ou apagar de um lado muda o outro em menos de um minuto); a escrita à mão e o marca-texto do reMarkable chegam aqui como traços e destaques; os trechos do Digest feitos lá entram no Digest. Só valem documentos que saíram daqui por “Enviar ao reMarkable”. Se o mesmo trecho foi marcado com o marca-texto e com o “Destacar” do mod, fica só o do mod. A escrita que chega do reMarkable é trocada sempre que a página muda lá (edições dela feitas aqui não ficam).'),
     info, btns, out,
-    h('p.muted', 'Escolha aqui a pasta onde o Syncthing deste aparelho guarda esses arquivos (ex.: no Windows, Documentos\\leitor_remarkable_sync). Depois disso o app lê a pasta ao abrir, ao voltar para ele e a cada minuto. No navegador do computador, se ele pedir de novo a permissão, toque em “Receber agora”.'),
+    h('p.muted', 'Escolha aqui a pasta onde o Syncthing deste aparelho guarda esses arquivos (ex.: no Windows, Documentos\\leitor_remarkable_sync). O app precisa poder ler e gravar nela (para as notas irem ao reMarkable). Depois disso ele lê a pasta ao abrir, ao voltar para ele e a cada minuto, e grava alguns segundos depois de cada mudança. No navegador do computador, se ele pedir de novo a permissão, toque em “Receber agora” e permita.'),
     h('p.muted', 'Nota adesiva vira nota no mesmo ponto; nota com citação vira destaque no trecho (se o texto for achado na página) com a nota; nota que saiu daqui e foi editada lá atualiza a original. Se a mesma nota foi editada aqui e lá, os dois textos ficam. Apagada lá some daqui (se você não mexeu nela aqui); apagada aqui não volta.'));
 }
 
