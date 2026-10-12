@@ -37,12 +37,9 @@ export async function sendToRemarkable(doc) {
   toast('', 1);
   const what = [r.notes ? r.notes + ' nota(s)' : '', r.digest ? r.digest + ' trecho(s) do Digest' : ''].filter(Boolean).join(' e ');
   const blob = new Blob([r.bytes], { type: 'application/pdf' });
-  let noFolder = false;
-  try { const RS = await import('./rmsync.js'); noFolder = RS.rmSyncSupported() && !(await RS.rmSyncFolderName()); } catch (e) { }
   modal('Enviar ao reMarkable', h('div',
     h('p', h('b', r.name)),
     h('p', what ? 'Vão escondidos no PDF: ' + what + '. No reMarkable, o RM2 Notas 0.9 os coloca no documento ao abri-lo.' : 'Este documento não tem notas digitadas nem trechos no Digest; vão só os destaques e a escrita, desenhados.'),
-    noFolder ? h('p', h('b', 'Para as notas feitas lá voltarem sozinhas: '), 'escolha uma vez a pasta do Syncthing em Configurações ▸ reMarkable.') : null,
     h('p.muted', 'Use um destes dois botões (não o “Exportar PDF anotado”, que não leva as notas). Para mandar pelo computador: “Salvar o PDF” e depois arraste o arquivo para o app do reMarkable.')), [
     { label: 'Salvar o PDF', onclick: async c => { c(); await downloadBlob(blob, r.name); toast('PDF salvo: ' + r.name + '. Envie pelo app do reMarkable.', 6000); } },
     { label: 'Compartilhar…', primary: true, onclick: async c => { c(); const ok = await shareFile(blob, r.name, 'application/pdf'); if (!ok) { await downloadBlob(blob, r.name); toast('O compartilhar não abriu; o PDF foi salvo: ' + r.name, 6000); } } },
