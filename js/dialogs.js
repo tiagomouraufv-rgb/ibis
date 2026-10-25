@@ -587,6 +587,11 @@ function guideNodes() {
         'Busque pelo nome em português ou inglês, ou pela fórmula (Si, Ge, SiO2, água, ouro, MEH-PPV…). Escolha o material e o conjunto de dados (artigo e faixa de λ).',
         'Digite o λ (ou toque num laser: 405, 532, 633, 785, 1064…, ou no gráfico) e veja n, k, ε₁, ε₂, absorção α, profundidade de penetração, reflexão normal, índice de grupo e λ no material.',
         'Os dados vêm do banco público do refractiveindex.info (no GitHub) e ficam guardados no aparelho. Uma vez por semana (com internet) o app confere a fonte e atualiza o catálogo e os materiais que você já usou; há também “Atualizar agora”. “Abrir no refractiveindex.info” abre a página completa do site no navegador.')),
+    sec('Importar Markdown (.md), ex.: folhas do MathTi',
+      ol('Na Biblioteca, toque em “Abrir PDF ou .md” e escolha o arquivo .md. Se ele usa imagens que estão em arquivos separados (figura.png), escolha o .md e as imagens juntos.',
+        'O arquivo vira um “texto” do app, com o título do primeiro “# título” (ou o nome do arquivo). Títulos, listas, tabelas e fórmulas ($...$ e $$...$$) aparecem formatados; imagens embutidas no .md também entram.',
+        'No tablet também dá para usar “Abrir com…” ou “Compartilhar” a partir do gerenciador de arquivos ou do próprio MathTi. Se o MathTi compartilhar como texto, o app oferece “Criar texto no app”.'),
+      h('p.muted', 'Links da internet para imagens continuam como links. Imagens de outra pasta que não foram escolhidas junto não vêm: insira depois pelo editor do texto.')),
     sec('Atalhos de teclado',
       h('table.pricetab', [
         ['Alt+S', 'Sincronizar com o reMarkable agora (o mesmo que o botão ⟳ da barra de cima)'],

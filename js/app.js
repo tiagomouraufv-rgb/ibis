@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 
 class App {
   constructor() {
@@ -104,7 +104,13 @@ class App {
     try {
       const o = JSON.parse(s);
       if (o.text !== undefined) { await this.receiveSharedText(o.text, o.subject); return; }
-      await this.importFiles([new File([b64ToBytes(o.b64)], o.name || 'documento.pdf', { type: 'application/pdf' })]);
+      let nm = o.name || 'documento.pdf';
+      const bytes = b64ToBytes(o.b64);
+      const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;   // %PDF
+      // arquivo recebido sem extensão (alguns apps não mandam o nome): o que não é PDF é tratado como Markdown
+      if (!isPdf && !/\.(md|markdown|mdown|txt)$/i.test(nm)) nm = nm.replace(/\.pdf$/i, '') + '.md';
+      const type = /\.(md|markdown|mdown)$/i.test(nm) ? 'text/markdown' : /\.txt$/i.test(nm) ? 'text/plain' : 'application/pdf';
+      await this.importFiles([new File([bytes], nm, { type })]);
     } catch (e) { toast('Não foi possível abrir o arquivo recebido: ' + e.message, 5000); }
   }
 
@@ -118,11 +124,18 @@ class App {
     pick.value = cur ? cur.id : '';
     const src = last ? (last.dest === 'adobe' ? 'Resposta do Acrobat' : last.dest === 'nlm' ? 'Resposta do NotebookLM' : 'Resposta da IA') : 'Texto recebido';
     const ta = h('textarea', { rows: 10 }); ta.value = text;
+    const mdDoc = (await import('./mdimport.js')).looksLikeMdDoc(text, subject);
     modal('Guardar o texto recebido', h('div',
+      mdDoc ? h('p', 'Parece um documento Markdown inteiro (por exemplo, uma folha do MathTi): use “Criar texto no app” para abri-lo formatado, com as fórmulas.') : null,
       h('p.muted', last && cur ? 'Veio logo depois do envio de “' + S.docTitle(cur) + '” (' + last.scope + ').' : 'Escolha a que documento ligar a nota.'),
       h('label.field', h('span', 'Documento'), pick), h('label.field', h('span', 'Texto'), ta)), [
       { label: 'Cancelar', onclick: c => c() },
-      { label: 'Guardar no Digest', primary: true, onclick: async c => {
+      mdDoc ? { label: 'Criar texto no app', onclick: async c => {
+        const MI = await import('./mdimport.js');
+        const f = new File([ta.value], (subject && /\.(md|markdown)$/i.test(subject) ? subject : MI.mdTitle(ta.value, 'Texto recebido') + '.md'), { type: 'text/markdown' });
+        c(); await this.importFiles([f]);
+      } } : null,
+      { label: 'Guardar no Digest', primary: !mdDoc, onclick: async c => {
         try {
           if (pick.value) await A.saveAnswer(pick.value, ta.value.trim(), { page: last && last.docId === pick.value ? last.page || 1 : 1, scope: last && last.docId === pick.value ? last.scope : '', source: subject || src, tag: last ? ({ adobe: 'acrobat', nlm: 'notebooklm' })[last.dest] : '' });
           else { const st = await S.digest(); /* global dgAdd */ const r = dgAdd(st, { doc: '', name: subject || src, page: 1, quote: subject || src, note: ta.value.trim(), tags: ['ia'] }, Date.now()); await S.saveDigest(r.store); }
@@ -383,8 +396,26 @@ class App {
 
   async importFiles(files, projectId) {
     let n = 0, restored = 0, adobe = 0, last = null;
+    // Markdown (.md) e texto (.txt): viram "textos" do app; imagens escolhidas junto viram as figuras deles
+    const MI = await import('./mdimport.js');
+    const mds = [...files].filter(f => MI.isMdFile(f) && !/\.pdf$/i.test(f.name));
+    if (mds.length) {
+      const imgs = [...files].filter(f => MI.isImgFile(f));
+      let res = [];
+      try { res = await MI.importMarkdownFiles(mds, imgs); } catch (e) { console.error(e); toast('Erro ao importar o texto: ' + e.message, 6000); }
+      for (const r of res) if (projectId) { r.doc.projects = [projectId]; await S.saveDoc(r.doc, { noUndo: true }); }
+      const miss = res.flatMap(r => r.missing);
+      if (res.length) toast(res.length + ' texto(s) importado(s)' + (miss.length ? ' · ' + miss.length + ' imagem(ns) não encontrada(s): escolha o .md junto com as imagens, ou insira depois' : '') + '.', miss.length ? 8000 : 4000);
+      files = [...files].filter(f => !mds.includes(f) && !MI.isImgFile(f));
+      if (!files.length) {
+        await this.refreshLinkIndex();
+        if (this.library.root.isConnected) this.library.renderMain();
+        if (res.length === 1) this.openDoc(res[0].doc.id);
+        return;
+      }
+    }
     for (const f of files) {
-      if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { toast(f.name + ' não é um PDF.'); continue; }
+      if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { toast(f.name + ' não é um PDF nem um .md.'); continue; }
       toast('Importando ' + f.name + '…', 10000);
       try {
         const bytes = new Uint8Array(await f.arrayBuffer());
