@@ -521,4 +521,14 @@ app.start().catch(e => { console.error(e); document.getElementById('app').append
 
 if (!isAndroidApp && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // versão nova instalada: recarrega para sair do código antigo (logo ao abrir, sem perguntar; depois, pergunta)
+  const hadSW = !!navigator.serviceWorker.controller, t0 = Date.now();
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadSW || reloading) return;
+    const go = () => { reloading = true; location.reload(); };
+    if (Date.now() - t0 < 10000) return go();
+    modal('Nova versão do app', h('p', 'Uma versão nova foi instalada. Recarregar agora?'),
+      [{ label: 'Depois' }, { label: 'Recarregar', primary: true, onclick: go }]);
+  });
 }
