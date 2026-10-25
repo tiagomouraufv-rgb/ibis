@@ -1,5 +1,5 @@
 // Guarda os arquivos do app para funcionar sem internet. Seus dados ficam no IndexedDB, não aqui.
-const CACHE = 'leitor-v1.8.0';
+const CACHE = 'leitor-v1.8.0-1';
 const FILES = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
   'js/app.js', 'js/db.js', 'js/util.js', 'js/store.js', 'js/pdfdoc.js', 'js/viewer.js', 'js/reader.js', 'js/library.js',
@@ -7,7 +7,7 @@ const FILES = [
   'vendor/pdf.min.mjs', 'vendor/marked.esm.js', 'vendor/purify.es.mjs', 'vendor/katex/katex.mjs', 'vendor/katex/katex.min.css', 'vendor/pdf.worker.min.mjs', 'vendor/pdf-lib.esm.min.js', 'vendor/fflate.js',
   'icons/icon-192.png', 'icons/icon-512.png',
 ];
-self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
+self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
