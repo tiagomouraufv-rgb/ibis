@@ -70,11 +70,11 @@ export class Library {
     const m = this.main; if (!m) return;
     clear(m);
     const search = h('input', { type: 'search', placeholder: 'Buscar em tudo: títulos, texto dos PDFs, notas, Digest…', value: this.q });
-    const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf', multiple: true, style: { display: 'none' } });
+    const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf,.md,.markdown,.txt,text/markdown,text/plain,image/*', multiple: true, style: { display: 'none' } });
     fileIn.addEventListener('change', () => this.app.importFiles([...fileIn.files], this.view.startsWith('projeto:') ? this.view.slice(8) : null));
     m.append(h('header.ltop', h('button.ibtn.menubtn', { type: 'button', 'aria-label': 'Menu', onclick: () => this.nav.classList.toggle('open') }, icon('menu', 22)), h('h1', await this.title()), h('div.grow'),
       h('div.newgroup', { role: 'group', 'aria-label': 'Novo' },
-        h('button.ng', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), h('span', 'Abrir PDF')),
+        h('button.ng', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), h('span', 'Abrir PDF ou .md')),
         h('button.ng', { type: 'button', onclick: () => this.newText() }, icon('text', 18), h('span', 'Novo texto')),
         h('button.ng', { type: 'button', onclick: () => this.newNotebook() }, icon('notebook', 18), h('span', 'Novo caderno'))), fileIn),
       h('div.lsearch', h('div.searchbox', icon('search', 18), search)));
