@@ -6,6 +6,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.min.mjs', im
 export { pdfjs };
 // fontes padrão (Symbol, Times, Helvetica…) e tabelas de caracteres (CMaps) que muitos PDFs usam sem embutir.
 // Sem elas, no Android letras gregas, sinais (=, +, parênteses) e ligaduras (fi, fl) somem ou viram quadradinhos.
+// 1.8.3: vendor/pdf.worker.min.mjs tem um ajuste nosso em Lexer.getName: nomes com escape duplicado por algum programa
+// (ex.: /Identity#232dH, /f#235fi) são decodificados de novo; sem isso as fontes de símbolos e as ligaduras falham.
 const VEND = new URL('../vendor/pdfjs/', import.meta.url).href;
 export const PDF_OPTS = { isEvalSupported: false, cMapUrl: VEND + 'cmaps/', cMapPacked: true, standardFontDataUrl: VEND + 'standard_fonts/' };
 
