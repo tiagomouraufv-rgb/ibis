@@ -1,0 +1,74 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Caneta rápida da Boox (SDK da Onyx). Se a compilação falhar por causa dela,
+// mude para onyx=false no arquivo gradle.properties: o app compila sem ela (e sem a caneta rápida).
+def useOnyx = (findProperty('onyx') ?: 'true').toString() != 'false'
+def onyxPenVersion = (findProperty('onyxPenVersion') ?: '1.4.11').toString()
+
+// Assinatura do APK. A chave NÃO fica no código: o GitHub Actions a recebe dos "Secrets" do repositório
+// e passa o caminho e a senha por variáveis de ambiente. Sem elas, o APK de release sai sem assinatura.
+def ksPath = System.getenv('LEITOR_KEYSTORE')
+def ksPass = System.getenv('LEITOR_KEYSTORE_PASS')
+def hasKey = ksPath && ksPass && new File(ksPath).exists()
+
+android {
+    namespace 'com.tiago.leitorpesquisa'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.tiago.leitorpesquisa'
+        minSdk 26
+        targetSdk 36
+        versionCode 23
+        versionName '1.8.1'
+    }
+
+    signingConfigs {
+        if (hasKey) {
+            release {
+                storeFile file(ksPath)
+                storeType 'pkcs12'
+                storePassword ksPass
+                keyAlias 'leitor'
+                keyPassword ksPass
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasKey) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs += (useOnyx ? 'src/onyx/java' : 'src/noonyx/java')
+        }
+    }
+
+    androidResources {
+        // não ignorar nenhum arquivo do app web
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.core:core:1.13.1'
+    // login do Google para a sincronização pelo Google Drive
+    implementation 'com.google.android.gms:play-services-auth:22.0.0'
+    if (useOnyx) {
+        // SDK da caneta da Onyx (Boox) e a biblioteca que libera as funções internas que ele usa
+        implementation "com.onyx.android.sdk:onyxsdk-pen:${onyxPenVersion}"
+        implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:4.3'
+    }
+}

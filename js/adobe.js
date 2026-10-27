@@ -6,7 +6,7 @@
 //   Desenho à mão (Ink)                                                 -> traço do app
 // Caixas de texto, carimbos, formas e anexos ficam como estão (aparecem desenhados na página).
 import { PDFDocument, PDFName, PDFRef, PDFDict } from '../vendor/pdf-lib.esm.min.js';
-import { pdfjs } from './pdfdoc.js';
+import { pdfjs, PDF_OPTS } from './pdfdoc.js';
 
 const MARKUP = { Highlight: 'highlight', Underline: 'underline', Squiggly: 'underline', StrikeOut: 'strike' };
 const MY_AUTHOR = 'Leitor de Pesquisa';
@@ -55,7 +55,7 @@ function textUnder(items, vp, rects) {
  */
 export async function extractForeign(bytes) {
   let pdf;
-  try { pdf = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise; } catch (e) { return null; }
+  try { pdf = await pdfjs.getDocument(Object.assign({ data: bytes.slice() }, PDF_OPTS)).promise; } catch (e) { return null; }
   const out = [], remove = new Set();
   try {
     for (let n = 1; n <= pdf.numPages; n++) {

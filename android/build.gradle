@@ -1,0 +1,4 @@
+// Projeto do Leitor de Pesquisa (Android). O app em si fica em app/src/main/assets/web.
+plugins {
+    id 'com.android.application' version '8.13.0' apply false
+}

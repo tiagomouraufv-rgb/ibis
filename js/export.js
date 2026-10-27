@@ -1,7 +1,7 @@
 // Exporta o PDF com as anotações (editável = anotações padrão de PDF; achatado = desenhado na página)
 // e reimporta um PDF exportado pelo app, devolvendo tudo editável.
 import { PDFDocument, PDFName, PDFString, PDFHexString, PDFArray, PDFDict, PDFRawStream, decodePDFRawStream } from '../vendor/pdf-lib.esm.min.js';
-import { openPdf, getPage, pageList, pdfjs, embeddedData, pageLabel } from './pdfdoc.js';
+import { openPdf, getPage, pageList, pdfjs, embeddedData, pageLabel, PDF_OPTS } from './pdfdoc.js';
 import * as S from './store.js';
 import { catInfo, uid } from './util.js';
 import { strokeWidth, imgCorners } from './viewer.js';
@@ -372,7 +372,7 @@ async function soundPcm(blob) {
 export async function importPdfBytes(name, bytes) {
   let data = null, attachments = null;
   try {
-    const tmp = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise;
+    const tmp = await pdfjs.getDocument(Object.assign({ data: bytes.slice() }, PDF_OPTS)).promise;
     data = await embeddedData({ pdf: tmp });
     if (data && data.app === 'leitor-pesquisa') { try { attachments = await tmp.getAttachments(); } catch (e) {} }
     await tmp.destroy();

@@ -1,0 +1,64 @@
+# Leitor de Pesquisa: gera o APK assinado sempre com a MESMA chave e publica na aba Releases.
+# Roda a cada envio ao main, mas só publica quando a versão (versionName em android/app/build.gradle) é nova.
+# O app web (raiz do repositório) entra no APK em app/src/main/assets/web na hora da compilação.
+# A chave fica nos Secrets do repositório (LEITOR_KEYSTORE_B64 e LEITOR_KEYSTORE_PASS), nunca no código.
+name: APK do Leitor
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leitor-apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versão
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(grep -oP "versionName\s+'\K[^']+" android/app/build.gradle)
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VER" >/dev/null 2>&1; then echo "APK v$VER já publicado; nada a fazer"; echo "skip=1" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-java@v4
+        if: steps.v.outputs.skip != '1'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Copiar o app web para dentro do APK
+        if: steps.v.outputs.skip != '1'
+        run: |
+          W=android/app/src/main/assets/web
+          rm -rf "$W" && mkdir -p "$W"
+          for f in index.html app.css manifest.webmanifest sw.js LEIA-ME.md js vendor icons; do cp -r "$f" "$W/"; done
+      - name: Gerar o APK assinado
+        if: steps.v.outputs.skip != '1'
+        working-directory: android
+        env:
+          KS_B64: ${{ secrets.LEITOR_KEYSTORE_B64 }}
+          LEITOR_KEYSTORE_PASS: ${{ secrets.LEITOR_KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$LEITOR_KEYSTORE_PASS" ]; then echo "::error::Faltam os Secrets LEITOR_KEYSTORE_B64 e LEITOR_KEYSTORE_PASS"; exit 1; fi
+          echo "$KS_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/leitor.p12"
+          export LEITOR_KEYSTORE="$RUNNER_TEMP/leitor.p12"
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease -Ponyx=false
+          rm -f "$LEITOR_KEYSTORE"
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Leitor-${{ steps.v.outputs.ver }}.apk"
+      - name: Publicar o APK (aba Releases)
+        if: steps.v.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.v.outputs.ver }}" "Leitor-${{ steps.v.outputs.ver }}.apk" \
+            --target "${{ github.sha }}" --title "Leitor ${{ steps.v.outputs.ver }}" \
+            --notes "APK assinado com a chave do repositório. Baixe o arquivo .apk abaixo e instale no tablet."

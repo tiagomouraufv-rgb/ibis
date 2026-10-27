@@ -4,6 +4,10 @@ import { db } from './db.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.min.mjs', import.meta.url).href;
 export { pdfjs };
+// fontes padrão (Symbol, Times, Helvetica…) e tabelas de caracteres (CMaps) que muitos PDFs usam sem embutir.
+// Sem elas, no Android letras gregas, sinais (=, +, parênteses) e ligaduras (fi, fl) somem ou viram quadradinhos.
+const VEND = new URL('../vendor/pdfjs/', import.meta.url).href;
+export const PDF_OPTS = { isEvalSupported: false, cMapUrl: VEND + 'cmaps/', cMapPacked: true, standardFontDataUrl: VEND + 'standard_fonts/' };
 
 const cache = new Map(); // docId -> Promise<PdfHandle>
 
@@ -21,7 +25,7 @@ export function openPdf(doc) {
   if (cache.has(doc.id)) return cache.get(doc.id);
   const p = (async () => {
     const data = await loadPdfBytes(doc);
-    const pdf = await pdfjs.getDocument({ data, isEvalSupported: false }).promise;
+    const pdf = await pdfjs.getDocument(Object.assign({ data }, PDF_OPTS)).promise;
     const sizes = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       const pg = await pdf.getPage(i);
