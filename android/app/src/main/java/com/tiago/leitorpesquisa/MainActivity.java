@@ -459,7 +459,18 @@ public class MainActivity extends Activity {
         } else if (requestCode == REQ_DRIVE) {
             final String id = pendingDriveId;
             pendingDriveId = null;
-            if (resultCode != RESULT_OK || data == null) { jsCallback(id, false, "Login cancelado."); return; }
+            if (resultCode != RESULT_OK || data == null) {
+                // o Google às vezes fecha a janela sozinho (cliente Android não reconhecido, conta sem permissão…):
+                // tenta ler o motivo para mostrar o código
+                String why = "";
+                if (data != null) {
+                    try { Identity.getAuthorizationClient(this).getAuthorizationResultFromIntent(data); }
+                    catch (ApiException e) { why = " (código " + e.getStatusCode() + (e.getMessage() != null ? ": " + e.getMessage() : "") + ")"; }
+                    catch (Exception e) { why = " (" + e.getClass().getSimpleName() + ")"; }
+                }
+                jsCallback(id, false, "Login cancelado" + why + " [resultado " + resultCode + (data == null ? ", sem dados" : "") + "].");
+                return;
+            }
             try {
                 AuthorizationResult r = Identity.getAuthorizationClient(this).getAuthorizationResultFromIntent(data);
                 if (r.getAccessToken() != null) jsCallback(id, true, r.getAccessToken());

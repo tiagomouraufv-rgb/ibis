@@ -1,5 +1,5 @@
 // Guarda os arquivos do app para funcionar sem internet. Seus dados ficam no IndexedDB, não aqui.
-const CACHE = 'leitor-v1.8.1';
+const CACHE = 'leitor-v1.8.2';
 const FILES = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
   'js/app.js', 'js/db.js', 'js/util.js', 'js/store.js', 'js/pdfdoc.js', 'js/viewer.js', 'js/reader.js', 'js/library.js',
