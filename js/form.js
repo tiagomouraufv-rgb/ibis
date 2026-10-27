@@ -13,7 +13,7 @@ export function deviceInfo() {
 }
 export function isBoox() { const d = deviceInfo(); return /onyx|boox/i.test([d.manufacturer, d.brand, d.model].join(' ')); }
 
-export const form = { form: 'tablet', eink: '', fine: false };
+export const form = { form: 'tablet', eink: '', einkc: 0, fine: false };
 
 export function detect(st) {
   const w = innerWidth;
@@ -24,17 +24,19 @@ export function detect(st) {
   if (einkOn) profile = st.einkProfile === 'bw' || st.einkProfile === 'color' ? st.einkProfile : (/colou?r|c\b|kaleido/i.test(String(d.model || '')) ? 'color' : 'bw');
   // DeX (Samsung) conta como computador mesmo com janela menor
   const f = w < 600 ? 'phone' : ((fine || d.dex) && w >= (d.dex ? 800 : 1000) && !einkOn ? 'desktop' : 'tablet');
-  return { form: f, eink: profile, fine };
+  const einkc = profile ? Math.max(0, Math.min(3, st.einkContrast == null ? 2 : +st.einkContrast || 0)) : 0;
+  return { form: f, eink: profile, einkc, fine };
 }
 
 export async function applyForm() {
   const st = await S.settings();
   const r = detect(st);
-  const changed = r.form !== form.form || r.eink !== form.eink;
+  const changed = r.form !== form.form || r.eink !== form.eink || r.einkc !== form.einkc;
   Object.assign(form, r);
   const de = document.documentElement;
   de.dataset.form = r.form;
   if (r.eink) de.dataset.eink = r.eink; else delete de.dataset.eink;
+  if (r.eink && r.einkc) de.dataset.einkc = r.einkc; else delete de.dataset.einkc;
   if (changed) S.emit('form', form);
   return form;
 }

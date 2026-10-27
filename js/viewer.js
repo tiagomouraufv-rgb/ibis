@@ -6,7 +6,7 @@ import { registerTextLayer, unregisterTextLayer } from './textsel.js';
 import { hydrate } from './embeds.js';
 import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
 import { headings } from './md.js';
-import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif } from './eink.js';
+import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif, einkEnhance } from './eink.js';
 import { detectSetup, layoutFromSetup } from './columns.js';
 import { densify, cutSegments, segPath } from './eraser.js';
 
@@ -432,14 +432,14 @@ export class Viewer {
     let page;
     try { page = await getPage(hd, s.p.n); } catch (e) { return; }
     if (s.rendered !== scale || this.hd !== hd) return;
-    // e-ink: menos pixels (a tela não mostra a diferença e o aparelho fica bem mais leve)
+    // e-ink: desenha na resolução real da tela (menos que isso a letra fica borrada e cinza no e-ink)
     const eink = isEink();
-    const dpr = Math.min(window.devicePixelRatio || 1, eink ? 1.5 : 2.5);
+    const dpr = Math.min(window.devicePixelRatio || 1, eink ? 3 : 2.5);
     let ps = scale * dpr;
     // página recortada (bordas cortadas ou modo artigo): desenha só a parte que aparece
     const cb = s.cb || [0, 0, 1, 1];
     const rw = s.p.w * cb[2], rh = s.p.h * cb[3];
-    const maxPix = eink ? 5e6 : 14e6;
+    const maxPix = eink ? 9e6 : 14e6;
     if (rw * rh * ps * ps > maxPix) ps = Math.sqrt(maxPix / (rw * rh));
     const vp = page.getViewport({ scale: ps, offsetX: -s.p.w * cb[0] * ps, offsetY: -s.p.h * cb[1] * ps });
     const c = h('canvas.pdfc');
@@ -449,6 +449,7 @@ export class Viewer {
     s.renderTask = task;
     try { await task.promise; } catch (e) { return; }
     if (s.rendered !== scale) return;
+    if (eink) einkEnhance(c);
     if (s.canvas) s.canvas.replaceWith(c); else s.pg.prepend(c);
     s.canvas = c;
     // camada de texto (para selecionar)

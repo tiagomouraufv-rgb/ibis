@@ -276,7 +276,7 @@ export async function deleteProject(id) {
 
 // ---------- configurações ----------
 const DEFAULTS = {
-  aiProvider: 'gemini', claudeKey: '', claudeModel: 'claude-sonnet-5-5', refPopup: true, cropInSplit: true, einkMode: 'auto', einkProfile: 'auto', fastPen: true, einkRefresh: 6, einkVolumeKeys: true, syncLazyPdf: false, articleFont: 18, pageFit: false, linksOtherWindow: true,
+  aiProvider: 'gemini', claudeKey: '', claudeModel: 'claude-sonnet-5-5', refPopup: true, cropInSplit: true, einkMode: 'auto', einkProfile: 'auto', fastPen: true, einkRefresh: 6, einkContrast: 2, einkVolumeKeys: true, syncLazyPdf: false, articleFont: 18, pageFit: false, linksOtherWindow: true,
   geminiKey: '', geminiModel: 'gemini-3.8-flash', language: 'português do Brasil',
   researchContext: 'Pesquisador em fotônica e pinças ópticas (UFV): aprisionamento óptico de nanopartículas de semicondutores orgânicos (MEH-PPV/Pdots) e de micropartículas semicondutoras (Ge, Si); modelagem teórica com osciladores de Lorentz no Mathcad Prime; orienta alunos de graduação.',
   translateTo: 'pt', obsidianVault: '', obsidianFolder: 'Leituras', theme: 'auto', pdfMode: 'normal',

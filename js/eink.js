@@ -137,6 +137,34 @@ export function initFastPen(app) {
   fastPen.reader = app.readers[0];
 }
 
+// ---------- contraste da página no e-ink ----------
+// Mesma ideia do "Contraste" do KOReader (documentação pública; nenhum código dele foi copiado): depois de desenhar a
+// página, cada tom de cinza passa por uma curva que deixa o papel branco puro, o texto preto puro e escurece a
+// borda das letras (gama > 1). No preto e branco a página também vira tons de cinza aqui, e não no controlador da tela.
+// [ponto do preto, ponto do branco, gama]
+export const EINK_LEVELS = { 1: [12, 242, 1.35], 2: [28, 232, 1.75], 3: [48, 220, 2.3] };
+const luts = {};
+function lutFor(level) {
+  if (luts[level]) return luts[level];
+  const [bp, wp, g] = EINK_LEVELS[level], lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) { const x = Math.min(1, Math.max(0, (v - bp) / (wp - bp))); lut[v] = Math.round(255 * Math.pow(x, g)); }
+  return (luts[level] = lut);
+}
+export function einkLevel() { return +(document.documentElement.dataset.einkc || 0); }
+export function einkEnhance(canvas) {
+  const level = einkLevel(), prof = document.documentElement.dataset.eink;
+  if (!prof || !EINK_LEVELS[level]) return;
+  const lut = lutFor(level), gray = prof === 'bw';
+  try {
+    const ctx = canvas.getContext('2d'), im = ctx.getImageData(0, 0, canvas.width, canvas.height), d = im.data;
+    for (let i = 0; i < d.length; i += 4) {
+      if (gray) { const y = lut[(d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8]; d[i] = d[i + 1] = d[i + 2] = y; }
+      else { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
+    }
+    ctx.putImageData(im, 0, 0);
+  } catch (e) { console.warn('contraste e-ink', e); }
+}
+
 // ---------- GIF parado no e-ink (animação no e-ink só borra a tela) ----------
 const stills = new Map();   // url do arquivo -> Promise<url da imagem parada | null>
 export function freezeIfGif(img) {
