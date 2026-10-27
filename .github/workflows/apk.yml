@@ -1,7 +1,7 @@
 # Leitor de Pesquisa: gera o APK assinado sempre com a MESMA chave e publica na aba Releases.
 # Roda a cada envio ao main, mas só publica quando a versão (versionName em android/app/build.gradle) é nova.
 # O app web (raiz do repositório) entra no APK em app/src/main/assets/web na hora da compilação.
-# A chave fica nos Secrets do repositório (LEITOR_KEYSTORE_B64 e LEITOR_KEYSTORE_PASS), nunca no código.
+# A chave fica cifrada (AES-256) em android/leitor-release.p12.enc; a senha só existe no Secret LEITOR_KEYSTORE_PASS.
 name: APK do Leitor
 
 on:
@@ -44,13 +44,17 @@ jobs:
         if: steps.v.outputs.skip != '1'
         working-directory: android
         env:
-          KS_B64: ${{ secrets.LEITOR_KEYSTORE_B64 }}
           LEITOR_KEYSTORE_PASS: ${{ secrets.LEITOR_KEYSTORE_PASS }}
         run: |
-          if [ -z "$KS_B64" ] || [ -z "$LEITOR_KEYSTORE_PASS" ]; then echo "::error::Faltam os Secrets LEITOR_KEYSTORE_B64 e LEITOR_KEYSTORE_PASS"; exit 1; fi
-          echo "$KS_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/leitor.p12"
-          export LEITOR_KEYSTORE="$RUNNER_TEMP/leitor.p12"
           chmod +x gradlew
+          if [ -z "$LEITOR_KEYSTORE_PASS" ]; then
+            echo "Sem o Secret LEITOR_KEYSTORE_PASS: compilo só para conferir, sem assinar."
+            ./gradlew --no-daemon assembleRelease -Ponyx=false
+            echo "::error::Compilou, mas falta o Secret LEITOR_KEYSTORE_PASS para assinar o APK."
+            exit 1
+          fi
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 300000 -in leitor-release.p12.enc -out "$RUNNER_TEMP/leitor.p12" -pass env:LEITOR_KEYSTORE_PASS
+          export LEITOR_KEYSTORE="$RUNNER_TEMP/leitor.p12"
           ./gradlew --no-daemon assembleRelease -Ponyx=false
           rm -f "$LEITOR_KEYSTORE"
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Leitor-${{ steps.v.outputs.ver }}.apk"

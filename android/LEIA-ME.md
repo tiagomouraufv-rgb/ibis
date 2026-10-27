@@ -28,7 +28,7 @@ Caneta rápida da Boox: onyxsdk-pen 1.4.11 e hiddenapibypass 4.3 (só quando `on
 ## Assinatura (1.8.1)
 
 O APK é gerado pelo GitHub Actions do repositório (arquivo `.github/workflows/apk.yml`), sempre com a mesma chave.
-A chave não fica no código: vem dos Secrets `LEITOR_KEYSTORE_B64` e `LEITOR_KEYSTORE_PASS` (alias `leitor`, PKCS12).
+A chave fica cifrada (AES-256) em `leitor-release.p12.enc`; a senha está só no Secret `LEITOR_KEYSTORE_PASS` (alias `leitor`, PKCS12).
 SHA-1 da chave: `25:4D:5F:9C:E2:AB:4A:F4:60:CD:1F:AE:6B:A1:DD:72:5A:5D:15:84`.
 
 ## Caneta rápida da Boox (kit da Onyx): leia antes de compilar
