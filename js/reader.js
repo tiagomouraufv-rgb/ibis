@@ -1650,7 +1650,7 @@ export class Reader {
       nb ? null : { icon: 'crop', label: (this.active && this.active.cropBox ? '✓ ' : '') + 'Cortar as bordas (texto na largura da tela)', onclick: () => { this.cropManual = !(this.active && this.active.cropBox); this.active.setCrop(this.cropManual); } },
       nb ? null : { icon: 'columns', label: (this.active && this.active.colMode ? '✓ ' : '') + 'Modo artigo (uma coluna por vez)', onclick: () => this.openArticle() },
       nb ? null : { icon: 'columns', label: 'Ajustar colunas do modo artigo…', onclick: () => this.columnSetup() },
-      nb || d.kind ? null : { icon: 'note', label: 'Trazer as notas do Adobe deste PDF', onclick: () => this.convertAdobe() },
+      nb || d.kind || d.format === 'djvu' ? null : { icon: 'note', label: 'Trazer as notas do Adobe deste PDF', onclick: () => this.convertAdobe() },
       !eink ? null : { icon: 'fitpage', label: ((this.settings || {}).pageFit ? '✓ ' : '') + 'Página inteira na tela', onclick: async () => { await S.setSettings({ pageFit: !(this.settings || {}).pageFit }); this.settings = await S.settings(); this.viewers.forEach(x => x.relayout(true)); } },
       !eink ? null : { icon: 'refresh', label: 'Limpar a tela agora (atualização completa)', onclick: () => flash() },
       eink ? null : { icon: 'split', label: this.app.split ? 'Fechar a tela dividida' : 'Dividir a tela', onclick: () => this.toggleSplit() },

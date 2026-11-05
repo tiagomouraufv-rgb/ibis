@@ -39,6 +39,9 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.util.Base64;
 import android.view.MotionEvent;
+import android.view.ActionMode;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -129,6 +132,40 @@ public class MainActivity extends Activity {
     private boolean pageKeys = false, volumeKeys = false;
     private OnyxPen pen;
 
+    // ---------- menu do sistema ao selecionar texto ----------
+    // Ao selecionar texto no documento, o Android mostra o próprio menu (Copiar, Compartilhar, Selecionar tudo...)
+    // por cima do menu do app. Aqui esse menu fica vazio (não aparece) e só o menu do app aparece. Dentro de um
+    // campo de digitação (nota, editor) o menu do sistema continua, porque é nele que fica o Colar.
+    private volatile boolean editingField = false;
+
+    private class ReaderWebView extends WebView {
+        ReaderWebView(Context c) { super(c); }
+        @Override public ActionMode startActionMode(ActionMode.Callback cb) { return super.startActionMode(wrapSelectionMenu(cb)); }
+        @Override public ActionMode startActionMode(ActionMode.Callback cb, int type) { return super.startActionMode(wrapSelectionMenu(cb), type); }
+    }
+
+    private ActionMode.Callback wrapSelectionMenu(final ActionMode.Callback cb) {
+        if (cb == null) return null;
+        return new ActionMode.Callback2() {
+            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                boolean r = cb.onCreateActionMode(mode, menu);
+                if (!editingField) menu.clear();
+                return r;
+            }
+            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                boolean r = cb.onPrepareActionMode(mode, menu);
+                if (!editingField) menu.clear();
+                return r;
+            }
+            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) { return cb.onActionItemClicked(mode, item); }
+            @Override public void onDestroyActionMode(ActionMode mode) { cb.onDestroyActionMode(mode); }
+            @Override public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+                if (cb instanceof ActionMode.Callback2) ((ActionMode.Callback2) cb).onGetContentRect(mode, view, outRect);
+                else super.onGetContentRect(mode, view, outRect);
+            }
+        };
+    }
+
     /** true nas janelas extras (DocWindowActivity): o "voltar" fecha a janela. */
     protected boolean isExtraWindow() { return false; }
 
@@ -137,7 +174,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF1D5A8A);
-        web = new WebView(this);
+        web = new ReaderWebView(this);
         root.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(root);
         setupEdgeToEdge();
@@ -317,6 +354,7 @@ public class MainActivity extends Activity {
         if (n.endsWith(".png")) return "image/png";
         if (n.endsWith(".svg")) return "image/svg+xml";
         if (n.endsWith(".md")) return "text/markdown";
+        if (n.endsWith(".wasm")) return "application/wasm";
         return "application/octet-stream";
     }
 
@@ -384,6 +422,13 @@ public class MainActivity extends Activity {
             String joined = String.join(",", params.getAcceptTypes()).toLowerCase(Locale.ROOT);
             List<String> mimes = new ArrayList<>();
             if (joined.contains("pdf")) mimes.add("application/pdf");
+            // DjVu: os gerenciadores de arquivos marcam de jeitos diferentes (ou como "binário")
+            if (joined.contains("djvu") || joined.contains(".djv")) {
+                mimes.add("image/vnd.djvu");
+                mimes.add("image/x-djvu");
+                mimes.add("image/djvu");
+                mimes.add("application/octet-stream");
+            }
             if (joined.contains("image")) mimes.add("image/*");
             // .md (Markdown, ex.: folhas do MathTi): muitos gerenciadores marcam como texto ou como "binário"
             if (joined.contains("markdown") || joined.contains(".md")) {
@@ -765,6 +810,10 @@ public class MainActivity extends Activity {
 
     // ---------- pontes chamadas pelo app (JavaScript) ----------
     private class Bridge {
+        // o app avisa quando o foco entra ou sai de um campo de digitação (lá o menu do sistema continua)
+        @JavascriptInterface
+        public void setEditing(boolean on) { editingField = on; }
+
         // Login do Google para o Drive (sincronização). interactive=false: só renova sem mostrar nada.
         @JavascriptInterface
         public void driveToken(String id, boolean interactive) {

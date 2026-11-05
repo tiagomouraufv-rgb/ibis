@@ -20,7 +20,7 @@ import * as WIN from './windows.js';
 import { bindDrop, noDrop } from './dnd.js';
 import { isEink, initFastPen, syncPageKeys, turnScroller } from './eink.js';
 
-const VERSION = '1.9.0';
+const VERSION = '1.10.0';
 
 class App {
   constructor() {
@@ -107,9 +107,11 @@ class App {
       let nm = o.name || 'documento.pdf';
       const bytes = b64ToBytes(o.b64);
       const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;   // %PDF
-      // arquivo recebido sem extensão (alguns apps não mandam o nome): o que não é PDF é tratado como Markdown
-      if (!isPdf && !/\.(md|markdown|mdown|txt)$/i.test(nm)) nm = nm.replace(/\.pdf$/i, '') + '.md';
-      const type = /\.(md|markdown|mdown)$/i.test(nm) ? 'text/markdown' : /\.txt$/i.test(nm) ? 'text/plain' : 'application/pdf';
+      const isDj = bytes[0] === 0x41 && bytes[1] === 0x54 && bytes[2] === 0x26 && bytes[3] === 0x54;   // AT&T (DjVu)
+      if (isDj && !/\.(djvu|djv)$/i.test(nm)) nm = nm.replace(/\.pdf$/i, '') + '.djvu';
+      // arquivo recebido sem extensão (alguns apps não mandam o nome): o que não é PDF nem DjVu é tratado como Markdown
+      if (!isPdf && !isDj && !/\.(md|markdown|mdown|txt)$/i.test(nm)) nm = nm.replace(/\.pdf$/i, '') + '.md';
+      const type = isDj ? 'image/vnd.djvu' : /\.(md|markdown|mdown)$/i.test(nm) ? 'text/markdown' : /\.txt$/i.test(nm) ? 'text/plain' : 'application/pdf';
       await this.importFiles([new File([bytes], nm, { type })]);
     } catch (e) { toast('Não foi possível abrir o arquivo recebido: ' + e.message, 5000); }
   }
@@ -415,7 +417,23 @@ class App {
       }
     }
     for (const f of files) {
-      if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { toast(f.name + ' não é um PDF nem um .md.'); continue; }
+      // livro DjVu: entra como está (o app lê DjVu); notas e escrita ficam no app, como num PDF
+      if (/\.(djvu|djv)$/i.test(f.name) || /djvu/i.test(f.type || '')) {
+        toast('Importando ' + f.name + '…', 10000);
+        try {
+          const bytes = new Uint8Array(await f.arrayBuffer());
+          const DJ = await import('./djvudoc.js');
+          if (!DJ.isDjvuBytes(bytes)) throw new Error('o arquivo não parece um DjVu');
+          const test = await DJ.openDjvu(bytes.slice());
+          const pages = test.numPages; await test.destroy();
+          const name = /\.(djvu|djv)$/i.test(f.name) ? f.name : f.name + '.djvu';
+          const doc = await S.addDocFromBytes(name, bytes, { format: 'djvu', pages });
+          if (projectId) { doc.projects = [projectId]; await S.saveDoc(doc, { noUndo: true }); }
+          n++; last = doc;
+        } catch (e) { console.error(e); toast('Não foi possível abrir ' + f.name + ': ' + e.message, 7000); }
+        continue;
+      }
+      if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { toast(f.name + ' não é um PDF, DjVu nem .md.'); continue; }
       toast('Importando ' + f.name + '…', 10000);
       try {
         const bytes = new Uint8Array(await f.arrayBuffer());
@@ -448,7 +466,7 @@ class App {
         restored += doc.restored || 0; adobe += doc.adobe || 0; n++; last = doc;
       } catch (e) { console.error(e); toast('Erro ao importar ' + f.name + ': ' + e.message, 5000); }
     }
-    if (n) toast(n + ' PDF(s) adicionado(s)' + (restored ? ' · ' + restored + ' anotações recuperadas do PDF' : '') + (adobe ? ' · ' + adobe + ' nota(s) do Adobe convertida(s)' : '') + '.', 4000);
+    if (n) toast(n + ' documento(s) adicionado(s)' + (restored ? ' · ' + restored + ' anotações recuperadas do PDF' : '') + (adobe ? ' · ' + adobe + ' nota(s) do Adobe convertida(s)' : '') + '.', 4000);
     await this.refreshLinkIndex();
     if (this.library.root.isConnected) this.library.renderMain();
     this.indexAll();
@@ -514,6 +532,16 @@ class App {
 }
 
 function debounceLinks(fn) { let t; return () => { clearTimeout(t); t = setTimeout(fn, 300); }; }
+
+// Android: o menu do sistema ao selecionar texto (Copiar, Compartilhar…) só aparece dentro de campos de digitação;
+// no documento fica só o menu do app. O app avisa o Android quando o foco entra ou sai de um campo.
+{
+  const N = window.AndroidBridge;
+  const editable = el => !!(el && el.closest && el.closest('input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=range]), textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'));
+  const tell = () => { try { if (N && typeof N.setEditing === 'function') N.setEditing(editable(document.activeElement)); } catch (e) {} };
+  document.addEventListener('focusin', tell, true);
+  document.addEventListener('focusout', () => setTimeout(tell, 0), true);
+}
 
 const app = new App();
 window.leitorApp = app;

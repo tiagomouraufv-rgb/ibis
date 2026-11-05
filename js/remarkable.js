@@ -10,7 +10,7 @@ import * as S from './store.js';
 import { toast, shareFile, downloadBlob, safeName, modal, h } from './util.js';
 
 export function canSendToRemarkable(doc) {
-  return !!doc && (!doc.kind || doc.kind === 'text');
+  return !!doc && (!doc.kind || doc.kind === 'text') && !(doc.format === 'djvu' || /\.(djvu|djv)$/i.test(doc.fileName || ''));
 }
 
 export async function buildRemarkablePdf(doc) {
@@ -29,7 +29,7 @@ export async function buildRemarkablePdf(doc) {
 // Gera o PDF e mostra as duas saídas: compartilhar (app do reMarkable no Android) ou salvar o arquivo
 // (para mandar pelo app do reMarkable no computador). As duas levam as notas e o Digest escondidos.
 export async function sendToRemarkable(doc) {
-  if (!canSendToRemarkable(doc)) { toast('Cadernos não vão para o reMarkable (só PDFs e textos).'); return; }
+  if (!canSendToRemarkable(doc)) { toast('Cadernos e livros DjVu não vão para o reMarkable (só PDFs e textos).'); return; }
   toast('Preparando o PDF para o reMarkable…', 20000);
   let r;
   try { r = await buildRemarkablePdf(doc); }

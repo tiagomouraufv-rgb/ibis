@@ -95,9 +95,10 @@ export async function deviceId() {
 export async function addDocFromBytes(name, bytes, extra = {}) {
   const fileId = uid('f');
   const id = uid('d');
-  await db.put('files', { id: fileId, blob: new Blob([bytes], { type: 'application/pdf' }) });
+  const djvu = extra.format === 'djvu';
+  await db.put('files', { id: fileId, blob: new Blob([bytes], { type: djvu ? 'image/vnd.djvu' : 'application/pdf' }) });
   const doc = Object.assign({
-    id, name: name.replace(/\.pdf$/i, ''), fileName: name, fileId, size: bytes.length, added: Date.now(), opened: 0,
+    id, name: name.replace(/\.(pdf|djvu|djv)$/i, ''), fileName: name, fileId, size: bytes.length, added: Date.now(), opened: 0,
     lastKey: 'p1', lastY: 0, meta: {}, projects: [], bookmarks: [], blanks: [], margins: {}, briefing: '',
   }, extra);
   await saveDoc(doc);

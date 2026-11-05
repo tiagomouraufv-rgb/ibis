@@ -10,7 +10,7 @@ import { createTextDoc } from './textdoc.js';
 export const MD_RE = /\.(md|markdown|mdown|txt)$/i;
 export const IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
 export const isMdFile = f => MD_RE.test(f.name || '') || /^text\/(markdown|x-markdown|plain)$/.test(f.type || '');
-export const isImgFile = f => IMG_RE.test(f.name || '') || /^image\//.test(f.type || '');
+export const isImgFile = f => !/\.(djvu|djv)$/i.test(f.name || '') && !/djvu/i.test(f.type || '') && (IMG_RE.test(f.name || '') || /^image\//.test(f.type || ''));
 
 const base = p => decodeURIComponent(String(p).split(/[\\/]/).pop() || '').toLowerCase();
 

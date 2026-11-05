@@ -1,7 +1,7 @@
 // Exporta o PDF com as anotações (editável = anotações padrão de PDF; achatado = desenhado na página)
 // e reimporta um PDF exportado pelo app, devolvendo tudo editável.
 import { PDFDocument, PDFName, PDFString, PDFHexString, PDFArray, PDFDict, PDFRawStream, decodePDFRawStream } from '../vendor/pdf-lib.esm.min.js';
-import { openPdf, getPage, pageList, pdfjs, embeddedData, pageLabel, PDF_OPTS } from './pdfdoc.js';
+import { openPdf, getPage, pageList, pdfjs, embeddedData, pageLabel, PDF_OPTS, isDjvu } from './pdfdoc.js';
 import * as S from './store.js';
 import { catInfo, uid } from './util.js';
 import { strokeWidth, imgCorners } from './viewer.js';
@@ -41,9 +41,16 @@ export async function exportPdf(doc, opts) {
   const hd = await openPdf(doc);
   const list = pageList(doc, hd);
   const anns = (await S.annots(doc.id)).slice();
-  const fileBlob = await S.audioBlob(doc.fileId);
-  if (!fileBlob) throw new Error('Arquivo do PDF não encontrado no aparelho.');
-  const bytes = new Uint8Array(await fileBlob.arrayBuffer());
+  let bytes;
+  if (isDjvu(doc)) {
+    // DjVu: o PDF exportado é feito com a imagem de cada página; as anotações vão por cima, como num PDF
+    const DJ = await import('./djvudoc.js');
+    bytes = await DJ.djvuToPdf(hd.pdf, { title: S.docTitle(doc), dpi: opts.djvuDpi || 150, onProgress: opts.onProgress });
+  } else {
+    const fileBlob = await S.audioBlob(doc.fileId);
+    if (!fileBlob) throw new Error('Arquivo do PDF não encontrado no aparelho.');
+    bytes = new Uint8Array(await fileBlob.arrayBuffer());
+  }
   const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
   const ctx = pdfDoc.context;
 

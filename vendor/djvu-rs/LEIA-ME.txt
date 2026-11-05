@@ -1,0 +1,3 @@
+djvu-rs 0.43.0 (MIT) — https://github.com/matyushkin/djvu-rs
+Decodificador de DjVu em WebAssembly (Rust), escrito a partir da especificação pública do DjVu 3; sem DjVuLibre, sem GPL.
+Arquivos copiados do pacote npm djvu-rs@0.43.0 sem alteração.

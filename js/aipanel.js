@@ -148,9 +148,16 @@ async function buildPdf(doc, pages, withAnn, notesMd) {
     const blankAfter = new Map((doc.blanks || []).map(b => [b.id, b.after]));
     idx = list.map((p, i) => (p.kind === 'pdf' ? set.has(p.n) : set.has(blankAfter.get(p.id))) ? i : -1).filter(i => i >= 0);
   } else {
-    const blob = await S.audioBlob(doc.fileId);
-    bytes = new Uint8Array(await blob.arrayBuffer());
-    idx = pages.map(p => p - 1);
+    const { isDjvu } = await import('./pdfdoc.js');
+    if (isDjvu(doc)) {
+      const DJ = await import('./djvudoc.js');
+      bytes = await DJ.djvuToPdf(hd.pdf, { pages, title: S.docTitle(doc) });
+      idx = pages.map((p, i) => i);
+    } else {
+      const blob = await S.audioBlob(doc.fileId);
+      bytes = new Uint8Array(await blob.arrayBuffer());
+      idx = pages.map(p => p - 1);
+    }
   }
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
   const out = await PDFDocument.create();

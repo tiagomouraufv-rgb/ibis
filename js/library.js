@@ -70,11 +70,11 @@ export class Library {
     const m = this.main; if (!m) return;
     clear(m);
     const search = h('input', { type: 'search', placeholder: 'Buscar em tudo: títulos, texto dos PDFs, notas, Digest…', value: this.q });
-    const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf,.md,.markdown,.txt,text/markdown,text/plain,image/*', multiple: true, style: { display: 'none' } });
+    const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf,.djvu,.djv,image/vnd.djvu,image/x-djvu,.md,.markdown,.txt,text/markdown,text/plain,image/*', multiple: true, style: { display: 'none' } });
     fileIn.addEventListener('change', () => this.app.importFiles([...fileIn.files], this.view.startsWith('projeto:') ? this.view.slice(8) : null));
     m.append(h('header.ltop', h('button.ibtn.menubtn', { type: 'button', 'aria-label': 'Menu', onclick: () => this.nav.classList.toggle('open') }, icon('menu', 22)), h('h1', await this.title()), h('div.grow'),
       h('div.newgroup', { role: 'group', 'aria-label': 'Novo' },
-        h('button.ng', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), h('span', 'Abrir PDF ou .md')),
+        h('button.ng', { type: 'button', onclick: () => fileIn.click() }, icon('plus', 18), h('span', 'Abrir PDF, DjVu ou .md')),
         h('button.ng', { type: 'button', onclick: () => this.newText() }, icon('text', 18), h('span', 'Novo texto')),
         h('button.ng', { type: 'button', onclick: () => this.newNotebook() }, icon('notebook', 18), h('span', 'Novo caderno'))), fileIn),
       h('div.lsearch', h('div.searchbox', icon('search', 18), search)));
@@ -412,7 +412,7 @@ export class Library {
       this.view.startsWith('projeto:') ? { icon: 'folder', label: 'Mover para pasta…', onclick: async () => { const pid = this.view.slice(8); const proj = (await S.projects()).find(p => p.id === pid); if (proj) this.pickFolder(proj, 'Mover “' + S.docTitle(d) + '” para', null, f => this.moveDoc(d.id, pid, f)); } } : null,
       d.kind === 'text' ? { icon: 'upload', label: 'Exportar texto (Markdown / Obsidian / PDF)', onclick: () => TX.openTextExport(d) } : d.kind === 'notebook' ? { icon: 'upload', label: 'Exportar caderno (PDF / Obsidian)', onclick: () => openNotebookExport(d) } : { icon: 'upload', label: 'Exportar PDF anotado', onclick: () => openExportDialog(d) },
       d.kind ? null : { icon: 'share', label: 'Enviar ao Obsidian', onclick: () => openObsidianDialog(d) },
-      d.kind === 'notebook' ? null : { icon: 'upload', label: 'Enviar ao reMarkable', onclick: async () => (await import('./remarkable.js')).sendToRemarkable(d) },
+      d.kind === 'notebook' || d.format === 'djvu' ? null : { icon: 'upload', label: 'Enviar ao reMarkable', onclick: async () => (await import('./remarkable.js')).sendToRemarkable(d) },
       d.kind === 'notebook' ? { icon: 'notebook', label: 'Capa…', onclick: () => this.app.reader.coverMenu(d, x - 220, y, () => this.renderMain()) } : null,
       { icon: 'ai', label: 'Resumo das anotações (IA)', onclick: () => openBriefing([d], S.docTitle(d)) },
       d.kind ? null : { icon: 'ai', label: 'Resumo por capítulo/seção (IA)', onclick: async () => { const { openSectionBriefing } = await import('./dialogs.js'); openSectionBriefing(d); } },

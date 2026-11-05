@@ -13,13 +13,16 @@ export const PDF_OPTS = { isEvalSupported: false, cMapUrl: VEND + 'cmaps/', cMap
 
 const cache = new Map(); // docId -> Promise<PdfHandle>
 
+// livro DjVu (aberto pelo djvudoc.js, que imita o pdf.js)
+export const isDjvu = doc => !!doc && (doc.format === 'djvu' || /\.(djvu|djv)$/i.test(doc.fileName || ''));
+
 export async function loadPdfBytes(doc) {
   let f = await db.get('files', doc.fileId);
   if (!f) {
     // modo "baixar só quando abrir": busca o PDF no Google Drive agora
     try { const SY = await import('./sync.js'); if (await SY.fetchFile(doc.fileId)) f = await db.get('files', doc.fileId); } catch (e) { console.warn(e); }
   }
-  if (!f) throw new Error('Arquivo do PDF não encontrado no aparelho (sem internet para baixar da sincronização?).');
+  if (!f) throw new Error('Arquivo do ' + (isDjvu(doc) ? 'DjVu' : 'PDF') + ' não encontrado no aparelho (sem internet para baixar da sincronização?).');
   return new Uint8Array(await f.blob.arrayBuffer());
 }
 
@@ -27,7 +30,7 @@ export function openPdf(doc) {
   if (cache.has(doc.id)) return cache.get(doc.id);
   const p = (async () => {
     const data = await loadPdfBytes(doc);
-    const pdf = await pdfjs.getDocument(Object.assign({ data }, PDF_OPTS)).promise;
+    const pdf = isDjvu(doc) ? await (await import('./djvudoc.js')).openDjvu(data) : await pdfjs.getDocument(Object.assign({ data }, PDF_OPTS)).promise;
     const sizes = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       const pg = await pdf.getPage(i);
