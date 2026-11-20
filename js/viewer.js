@@ -6,7 +6,7 @@ import { registerTextLayer, unregisterTextLayer } from './textsel.js';
 import { hydrate } from './embeds.js';
 import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
 import { headings } from './md.js';
-import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif, einkEnhance } from './eink.js';
+import { isEink, turnViewer, tapZone, swipeDir, freezeIfGif, einkEnhance, fastPen } from './eink.js';
 import { detectSetup, layoutFromSetup } from './columns.js';
 import { densify, cutSegments, segPath } from './eraser.js';
 
@@ -61,7 +61,11 @@ export class Viewer {
     this.io = new IntersectionObserver(es => this.onIntersect(es), { root: this.scroller, rootMargin: isEink() ? '300px 0px' : '900px 0px' });
     this.ro = new ResizeObserver(() => { if (this.doc && Math.abs(this.lastWidth - this.scroller.clientWidth) > 4) this.relayout(true); });
     this.ro.observe(this.scroller);
-    this.offAnn = S.on('annots', e => { if (this.doc && e.docId === this.doc.id) this.redrawOverlays(e.pageKey); });
+    // com a caneta rápida da Boox desenhando, o redesenho espera a caneta ficar parada (fastPen.refresh)
+    this.offAnn = S.on('annots', e => {
+      if (!this.doc || e.docId !== this.doc.id) return;
+      if (fastPen.holding(this)) fastPen.hold(this, e.pageKey); else this.redrawOverlays(e.pageKey);
+    });
     // o índice de ligações mudou (link criado aqui, em outro documento ou em outra janela): redesenha os links de volta
     this.offLinks = S.on('links', () => { if (this.doc) for (const sl of this.slots.values()) this.drawOverlay(sl); });
     this.scroller.addEventListener('scroll', () => this.onScroll(), { passive: true });
@@ -919,6 +923,8 @@ export class Viewer {
   }
 
   onScroll() {
+    // a página mudou: os traços que a Boox desenhou por cima não podem ficar soltos na tela
+    if (fastPen.held.has(this)) fastPen.refresh();
     clearTimeout(this.saveT);
     this.saveT = setTimeout(() => {
       if (!this.doc) return;
@@ -1335,7 +1341,7 @@ export class Viewer {
     const rec = this.app.recorder && this.app.recorder.stamp(this.doc.id);
     if (rec) a.rec = rec;
     this.anns.push(a);
-    this.drawOverlay(s);
+    if (fastPen.holding(this)) fastPen.hold(this, s.p.key); else this.drawOverlay(s);
     await S.putAnnot(a);
     this.maybeAutoPage(s, a.pts);
   }

@@ -326,6 +326,7 @@ export async function openSettings(tab) {
   const eMode = sel([['auto', 'Automático (liga no Boox)'], ['on', 'Ligado'], ['off', 'Desligado']], st.einkMode || 'auto');
   const eProf = sel([['auto', 'Automático'], ['bw', 'Preto e branco (Go 7)'], ['color', 'Cores (Go Color 7)']], st.einkProfile || 'auto');
   const bStyle = sel([['pencil', 'Lápis (traço fino e uniforme)'], ['fountain', 'Tinteiro (varia com a pressão)']], st.booxPenStyle === 'fountain' ? 'fountain' : 'pencil');
+  const bDelay = sel([['1.5', '1,5 segundo'], ['3', '3 segundos (padrão)'], ['5', '5 segundos'], ['10', '10 segundos']], String(st.booxRedrawDelay || 3));
   const fPen = chk(st.fastPen !== false), vKeys = chk(st.einkVolumeKeys !== false), lazy = chk(st.syncLazyPdf), otherW = chk(st.linksOtherWindow !== false);
   const linkOpen = h('select', [['same', 'Abre aqui mesmo (com “voltar”)'], ['split', 'Abre lado a lado (divide a tela)']].map(([v, l]) => h('option', { value: v, selected: (st.linkOpen || 'same') === v ? true : undefined }, l)));
   const eCon = sel([['0', 'Como no PDF (sem ajuste)'], ['1', 'Leve'], ['2', 'Médio (padrão)'], ['3', 'Forte']], String(st.einkContrast == null ? 2 : st.einkContrast));
@@ -341,6 +342,7 @@ export async function openSettings(tab) {
       h('label.field', h('span', 'E-ink: contraste da leitura (papel branco, letra preta e mais firme)'), eCon),
       h('label.check', fPen, h('span', 'Caneta rápida no Boox (kit da Onyx: o traço aparece na hora, como no app de notas da Boox)')),
       h('label.field', h('span', 'Boox: estilo do traço da caneta'), bStyle),
+      h('label.field', h('span', 'Boox: o app redesenha os traços depois de a caneta ficar parada por'), bDelay),
       h('label.field', h('span', 'E-ink: atualizar a tela inteira a cada quantas páginas (0 = nunca)'), eRef),
       h('label.check', vKeys, h('span', 'E-ink: botões de volume também viram a página')),
       h('label.check', lazy, h('span', 'Baixar os PDFs da sincronização só quando abrir (bom para o celular)')),
@@ -393,7 +395,7 @@ export async function openSettings(tab) {
   modal('Configurações', h('div.settings', tabRow, holder), [
     { label: 'Cancelar' },
     { label: 'Salvar', primary: true, onclick: async c => {
-      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, einkMode: eMode.value, einkProfile: eProf.value, einkContrast: +eCon.value, fastPen: fPen.checked, booxPenStyle: bStyle.value, einkVolumeKeys: vKeys.checked, syncLazyPdf: lazy.checked, linksOtherWindow: otherW.checked, linkOpen: linkOpen.value, einkRefresh: Math.max(0, Math.min(50, +eRef.value || 0)), theme: theme.value, ttsRate: +rate.value };
+      const p = { researchContext: ctx.value, penOnly: pen.checked, penButtonErase: penEr.checked, aiProvider: prov.value, claudeModel: cmodel.value, refPopup: refp.checked, cropInSplit: cropS.checked, einkMode: eMode.value, einkProfile: eProf.value, einkContrast: +eCon.value, fastPen: fPen.checked, booxPenStyle: bStyle.value, booxRedrawDelay: +bDelay.value, einkVolumeKeys: vKeys.checked, syncLazyPdf: lazy.checked, linksOtherWindow: otherW.checked, linkOpen: linkOpen.value, einkRefresh: Math.max(0, Math.min(50, +eRef.value || 0)), theme: theme.value, ttsRate: +rate.value };
       for (const k in f) p[k] = f[k].value.trim();
       await S.setSettings(p); c(); toast('Configurações salvas.');
     } },
@@ -556,7 +558,7 @@ function guideNodes() {
         '⋯ > “Modo artigo”: para artigos em duas colunas, uma coluna por vez (com a página virando).',
         '⋯ > “Página inteira na tela”: cada página cabe inteira, sem rolar dentro dela.',
         'No e-ink ficam desligados: tela dividida, novas janelas, animação de GIF (a imagem fica parada) e vídeo (fica só o link).',
-        'Caneta rápida: no app Android, com Caneta, Marca-texto ou Borracha, o traço aparece na hora pelo kit da Onyx (o mesmo do app de notas da Boox). Em Configurações > Geral escolha o estilo do traço: Lápis ou Tinteiro. Se não funcionar, o app avisa e volta para a caneta comum; dá para desligar em Configurações.')),
+        'Caneta rápida: no app Android, com Caneta, Marca-texto ou Borracha, o traço aparece na hora pelo kit da Onyx (o mesmo do app de notas da Boox). Em Configurações > Geral escolha o estilo do traço (Lápis ou Tinteiro). A caneta fica sempre ligada e o app só redesenha a tela quando a caneta fica parada pelo tempo escolhido (padrão 3 s), como no app de notas da Boox. Se não funcionar, o app avisa e volta para a caneta comum; dá para desligar em Configurações.')),
     sec('Modo artigo (uma coluna por vez)',
       ul('No PDF, toque no ícone de colunas no topo (ou ⋯ > “Modo artigo”). Como no NeoReader da Boox: as bordas brancas saem e cada página é dividida em colunas iguais; cada coluna aparece sozinha, na largura da tela (esquerda, direita, próxima página).',
         'O título e o resumo que ocupam a largura toda da 1ª página aparecem antes das colunas, numa faixa própria.',

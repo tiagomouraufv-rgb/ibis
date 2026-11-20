@@ -63,7 +63,7 @@ jobs:
           tail -n 80 "$RUNNER_TEMP/build.log"
           if [ $rc -ne 0 ]; then
             # o motivo do erro vira um aviso visível na página da execução
-            msg=$(grep -E "error:|What went wrong|Could not|> .*[Ff]ailed|Caused by|not found|cannot find symbol|symbol: " "$RUNNER_TEMP/build.log" | head -n 25 | sed 's/%/%25/g' | tr '\n' '|')
+            msg=$( { sed -n '/What went wrong/,+14p' "$RUNNER_TEMP/build.log"; grep -E "error:|cannot find symbol|symbol: |location: " "$RUNNER_TEMP/build.log" | head -n 20; } | head -n 40 | sed 's/%/%25/g' | tr '\n' '|')
             echo "::error::Falhou ao compilar: $msg"
             exit $rc
           fi

@@ -84,23 +84,75 @@ export async function syncPageKeys() {
 }
 
 // ---------- caneta rápida da Onyx ----------
-// Enquanto a caneta, o marca-texto ou a borracha estão escolhidos, a área das páginas é entregue à Boox,
-// que desenha o traço na hora. No fim de cada traço os pontos chegam em window.__fastInk.
+// Como na demonstração oficial da Onyx: a caneta da Boox fica ligada o tempo todo enquanto o documento está aberto
+// (o traço aparece na hora, desenhado pela própria Boox) e o app NÃO redesenha a tela a cada traço. Os traços são
+// guardados na hora, mas o desenho do app só é refeito quando a caneta fica parada fora da tela por um tempo
+// (Configurações: "Boox: redesenhar depois de…"); nesse momento a caneta é desligada por um instante, o app
+// desenha os traços guardados e a caneta volta. Menus e janelas por cima também desligam a caneta só por um instante,
+// sem fechar o kit (reabrir o kit é o que deixava a Boox lenta). No fim de cada traço os pontos chegam em window.__fastInk.
 const BLOCKERS = '.modal-back, .popmenu, .article-view, .recentbar, .lookpop, .refpop, .tablepick';
 const FLOATERS = '.selmenu, .pill, .fmtbar, .floatplayer, .ttsbar, .rtop';
+const PEN_TOOLS = ['pen', 'marker', 'eraser'];
 export const fastPen = {
-  on: false, failed: false, reader: null,
+  on: false,          // kit aberto (caneta da Boox ativa ou pausada)
+  live: false,        // caneta da Boox desenhando agora
+  failed: false, reader: null, last: '',
+  held: new Set(),    // viewers com desenho adiado
+  idleT: null,
   supported() {
     if (this.failed || !N || !N.penSupported) return false;
     try { return !!N.penSupported(); } catch (e) { return false; }
+  },
+  // o viewer deve adiar o redesenho agora?
+  holding(viewer) { return this.on && this.live && this.reader && this.reader.active === viewer; },
+  hold(viewer, key) { viewer.heldKeys = viewer.heldKeys || new Set(); viewer.heldKeys.add(key || '*'); this.held.add(viewer); },
+  // desenha o que ficou guardado (com a caneta da Boox desligada nesse instante)
+  flush() {
+    clearTimeout(this.idleT); this.idleT = null;
+    for (const v of this.held) {
+      const keys = v.heldKeys || new Set(); v.heldKeys = null;
+      if (!v.doc) continue;
+      if (keys.has('*')) { for (const sl of v.slots.values()) v.drawOverlay(sl); }
+      else for (const k of keys) v.redrawOverlays(k);
+    }
+    this.held.clear();
+  },
+  // caneta parada por um tempo: desliga a caneta da Boox, o app desenha e a caneta volta
+  async refresh() {
+    if (!this.held.size) return;
+    if (!this.on || !this.live) { this.flush(); return; }
+    try { N.penEnable(false); } catch (e) {}
+    this.live = false;
+    this.flush();
+    await new Promise(r => setTimeout(r, 180));
+    if (this.on && this.want) { try { N.penEnable(true); this.live = true; } catch (e) {} }
+  },
+  async idle(short) {
+    clearTimeout(this.idleT);
+    const st = await S.settings();
+    const ms = short ? 500 : Math.max(800, (+st.booxRedrawDelay || 3) * 1000);
+    this.idleT = setTimeout(() => this.refresh(), ms);
   },
   async update(reader) {
     if (reader) this.reader = reader;
     const r = this.reader;
     const st = await S.settings();
-    const want = !!(r && isEink() && st.fastPen !== false && this.supported() && r.root.isConnected && r.active && r.doc &&
-      ['pen', 'marker', 'eraser'].includes(r.tool) && !document.querySelector(BLOCKERS) && document.visibilityState === 'visible');
-    if (!want) { if (this.on) { try { N.penStop(); } catch (e) {} this.on = false; this.last = ''; } return; }
+    // documento aberto numa Boox com a caneta rápida ligada: o kit fica aberto (mesmo com outra ferramenta)
+    const open = !!(r && isEink() && st.fastPen !== false && this.supported() && r.root.isConnected && r.active && r.doc && document.visibilityState === 'visible');
+    if (!open) {
+      this.want = false;
+      if (this.on) { try { N.penStop(); } catch (e) {} this.on = false; this.live = false; this.last = ''; }
+      this.flush();
+      return;
+    }
+    // desenhar agora só com caneta, marca-texto ou borracha e sem menu/janela por cima
+    const draw = PEN_TOOLS.includes(r.tool) && !document.querySelector(BLOCKERS);
+    this.want = draw;
+    if (!draw) {
+      if (this.live) { try { N.penEnable(false); } catch (e) {} this.live = false; }
+      this.flush();
+      return;
+    }
     const v = r.active, rc = v.scroller.getBoundingClientRect();
     const ex = [...document.querySelectorAll(FLOATERS)].filter(e => e.offsetParent || getComputedStyle(e).position === 'fixed')
       .map(e => e.getBoundingClientRect()).filter(b => b.width && b.height && b.bottom > rc.top && b.top < rc.bottom && b.right > rc.left && b.left < rc.right)
@@ -109,11 +161,15 @@ export const fastPen = {
     // estilo do traço desenhado pela Boox: lápis ou tinteiro (Configurações); o marca-texto usa o da Boox
     const s = r.tool === 'marker' ? 'marker' : (st.booxPenStyle === 'fountain' ? 'fountain' : 'pencil');
     const json = JSON.stringify({ l: Math.round(rc.left), t: Math.round(rc.top), r: Math.round(rc.right), b: Math.round(rc.bottom), ex: ex.map(q => q.map(Math.round)), w: +w.toFixed(1), s });
-    if (this.on && json === this.last) return;   // nada mudou: não reinicia a caneta (deixava a Boox lenta)
-    try { N.penStart(json); this.on = true; this.last = json; } catch (e) { this.fail(String(e)); }
+    if (this.on && json === this.last) {
+      if (!this.live) { try { N.penEnable(true); this.live = true; } catch (e) {} }
+      return;   // nada mudou: não reinicia a caneta (deixava a Boox lenta)
+    }
+    try { N.penStart(json); this.on = true; this.live = true; this.last = json; } catch (e) { this.fail(String(e)); }
   },
   fail(msg) {
-    this.failed = true; this.on = false;
+    this.failed = true; this.on = false; this.live = false;
+    this.flush();
     console.warn('caneta rápida', msg);
     toast('A caneta rápida da Boox não funcionou neste aparelho; usando a caneta comum.', 5000);
   },
@@ -125,8 +181,12 @@ export function initFastPen(app) {
   const schedule = () => { clearTimeout(upT); upT = setTimeout(() => fastPen.update(), 60); };
   window.__fastInk = json => {
     let o; try { o = JSON.parse(json); } catch (e) { return; }
+    // a caneta encostou na tela: espera ela sair antes de redesenhar
+    if (o.ev === 'begin') { clearTimeout(fastPen.idleT); return; }
+    if (o.ev === 'end') { fastPen.idle(fastPen.reader && fastPen.reader.tool === 'eraser'); return; }
     const r = fastPen.reader;
     if (r && r.active && r.active.fastStroke) r.active.fastStroke(o);
+    fastPen.idle(!!o.erase || (r && r.tool === 'eraser'));
   };
   window.__fastPenFailed = msg => fastPen.fail(msg);
   window.__fastPenResume = schedule;

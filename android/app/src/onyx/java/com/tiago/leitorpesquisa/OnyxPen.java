@@ -97,12 +97,13 @@ final class OnyxPen {
     }
 
     private final RawInputCallback callback = new RawInputCallback() {
-        @Override public void onBeginRawDrawing(boolean b, TouchPoint p) { }
-        @Override public void onEndRawDrawing(boolean b, TouchPoint p) { }
+        // o app espera a caneta sair da tela antes de redesenhar (ver fastPen no eink.js)
+        @Override public void onBeginRawDrawing(boolean b, TouchPoint p) { sink.stroke("{\"ev\":\"begin\"}"); }
+        @Override public void onEndRawDrawing(boolean b, TouchPoint p) { sink.stroke("{\"ev\":\"end\"}"); }
         @Override public void onRawDrawingTouchPointMoveReceived(TouchPoint p) { }
         @Override public void onRawDrawingTouchPointListReceived(TouchPointList l) { send(l, false); }
-        @Override public void onBeginRawErasing(boolean b, TouchPoint p) { }
-        @Override public void onEndRawErasing(boolean b, TouchPoint p) { }
+        @Override public void onBeginRawErasing(boolean b, TouchPoint p) { sink.stroke("{\"ev\":\"begin\"}"); }
+        @Override public void onEndRawErasing(boolean b, TouchPoint p) { sink.stroke("{\"ev\":\"end\"}"); }
         @Override public void onRawErasingTouchPointMoveReceived(TouchPoint p) { }
         @Override public void onRawErasingTouchPointListReceived(TouchPointList l) { send(l, true); }
     };
