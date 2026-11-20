@@ -64,6 +64,8 @@ const P = {
   upload: '<path d="M12 15V3"/><path d="M7 8l5-5 5 5"/><path d="M5 14v6h14v-6"/>',
   download: '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  collapse: '<path d="M7 14l5-5 5 5"/><path d="M5 19h14"/>',
+  canvas: '<path d="M3 5h18M3 19h18"/><rect x="5" y="8.5" width="14" height="7" rx="1" stroke-dasharray="2 2"/><path d="M9 13.5l2-2 1.5 1.5 2.5-2.5"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   bookmark: '<path d="M6 3h12v18l-6-4-6 4z"/>',
   list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',

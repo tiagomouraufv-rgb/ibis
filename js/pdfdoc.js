@@ -78,6 +78,8 @@ export function pageList(doc, hd) {
 export function pageLabel(key, doc) {
   if (!key) return '';
   if (key[0] === 'p') return 'p. ' + key.slice(1);
+  // espaço aberto no texto (escrito à mão no meio da página)
+  if (key[0] === 'g' && doc && doc.gaps) { const g = doc.gaps.find(x => 'g' + x.id === key); if (g) return 'p. ' + g.page + ' (escrito)'; }
   if (doc && doc.kind === 'text') {
     if (key === 'top' || !key) return 'início';
     const m = String(doc.md || '').match(/^#{1,6}\s+.+$/gm) || [];

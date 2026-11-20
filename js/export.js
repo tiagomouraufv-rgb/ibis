@@ -39,8 +39,15 @@ function bounds(pts, pad = 0) {
  */
 export async function exportPdf(doc, opts) {
   const hd = await openPdf(doc);
-  const list = pageList(doc, hd);
   const anns = (await S.annots(doc.id)).slice();
+  // espaços abertos no texto (Kindle Scribe): o que foi escrito neles vai numa página logo depois da página do texto
+  const list = [];
+  for (const p of pageList(doc, hd)) {
+    list.push(p);
+    if (p.kind !== 'pdf') continue;
+    for (const g of (doc.gaps || []).filter(g => g.page === p.n).sort((a, b) => a.y - b.y))
+      if (anns.some(a => a.pageKey === 'g' + g.id)) list.push({ key: 'g' + g.id, kind: 'blank', gap: g.id, w: p.w, h: g.h, label: 'escrito' });
+  }
   let bytes;
   if (isDjvu(doc)) {
     // DjVu: o PDF exportado é feito com a imagem de cada página; as anotações vão por cima, como num PDF

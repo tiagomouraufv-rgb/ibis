@@ -846,3 +846,12 @@ button.cite { border: 0; background: rgba(29,90,138,.12); color: #1D5A8A; border
 .aipaste { margin-top: 8px; font-size: 12.5px; }
 .aipaste textarea { width: 100%; box-sizing: border-box; margin: 4px 0; border: 1px solid var(--line2); border-radius: 8px; padding: 6px; font: inherit; }
 .aiopt > span { flex: 1 1 0; min-width: 0; }
+
+/* espaço aberto no texto (como o Active Canvas do Kindle Scribe): a página cortada fica colada ao espaço */
+.slotwrap.contnext { margin-bottom: 0; }
+.slotwrap.cont .slot-head { display: none; }
+html[data-eink] .slotwrap.contnext { margin-bottom: 0; }
+.slotwrap.gapwrap { position: relative; }
+.pg.gappg { background: #fff; box-shadow: inset 0 1px 0 #8a939c, inset 0 -1px 0 #8a939c; }
+.gapbar { position: absolute; top: 4px; right: 4px; z-index: 3; display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: rgba(255,255,255,.92); border: 1px solid #c9ced3; }
+.gapmark { position: absolute; z-index: 4; width: 28px; height: 28px; padding: 0; border-radius: 14px; border: 1px solid #333; background: #fff; color: #111; font-size: 15px; line-height: 26px; cursor: pointer; }

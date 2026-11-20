@@ -173,6 +173,7 @@ export class Reader {
       tb('linkrect', 'link', 'Criar link: desenhe um retângulo'),
       this.cropTool = tb('crop', 'crop', 'Recortar imagem da página (equação, figura)'),
       tb('note', 'note', 'Nota ou nota de voz: toque no lugar'),
+      this.gapTool = Object.assign(tb('gap', 'canvas', 'Espaço para escrever no texto (como no Kindle Scribe): toque na linha e escreva logo abaixo dela'), { className: 'ibtn tool notnb' }),
       btn('shapes', '', () => this.openTools('shapes'), { title: 'Formas: geométricas, óptica (Gauss, LG, Bessel, Airy…), quântica, eletromagnetismo, física médica', iconOnly: true, cls: 'ibtn tool' }),
       btn('calc', '', () => this.openTools('calc'), { title: 'Calculadora física: λ ↔ eV ↔ cm⁻¹, feixe gaussiano, pinças, física médica, unidades', iconOnly: true, cls: 'ibtn tool' }),
       this.aiRail = btn('ai', '', () => this.openTools('ai'), { title: 'IA: perguntar ao documento (sua chave), Adobe Acrobat ou NotebookLM / Gemini', iconOnly: true, cls: 'ibtn tool notnb' }),
@@ -434,6 +435,7 @@ export class Reader {
     if (id === 'text') this.penHint.textContent = 'Toque na página para escrever com o teclado (Markdown, $equações$)';
     if (id === 'lasso') this.penHint.textContent = 'Contorne com a S Pen o que quer selecionar';
     if (id === 'crop') this.penHint.textContent = 'Desenhe um retângulo em volta da equação ou figura';
+    if (id === 'gap') this.penHint.textContent = 'Toque na linha do texto: abre um espaço logo abaixo para escrever';
     if (id !== 'shape' && this.shapePending) { this.shapePending = null; if (this.shapeDone) { this.shapeDone(); this.shapeDone = null; } }
     if (id !== 'lasso') this.viewers.forEach(v => v.clearSelection());
     if (this.textEditor && this.textEditor.active && id !== 'text' && id !== 'read') this.textEditor.close();
@@ -1044,6 +1046,10 @@ export class Reader {
       act(!!ex.voice, 'mic', 'Voz', 'Tirar voz', () => this.selVoice(), () => this.undoVoice(ex.voice)),
       act(!!ex.link, 'link', 'Link', 'Tirar link', () => { const s2 = this.sel; this.linkBuilder(s2.v, { pageKey: s2.segs[0].pageKey, rects: s2.segs[0].rects, text: cleanText(s2.text) }); }, () => this.undoAnn(ex.link, 'link')),
       btn('copy', 'Copiar', () => { copyText(cleanText(this.sel.text)); toast('Copiado.'); this.clearSel(); }, { cls: 'mbtn lbl' }),
+      // abre um espaço logo abaixo do trecho, no meio do texto, para escrever com a caneta (Kindle Scribe)
+      (() => { const sg = this.sel.segs[this.sel.segs.length - 1]; const r = sg && sg.rects[sg.rects.length - 1];
+        if (!sg || !r || !/^p\d+$/.test(sg.pageKey) || this.sel.v.isNb || this.sel.v.colMode) return null;
+        return btn('canvas', 'Escrever aqui', () => { const v2 = this.sel.v; this.clearSel(); v2.openGap(+sg.pageKey.slice(1), r[1] + r[3] / 2); }, { cls: 'mbtn lbl', title: 'Abre um espaço no texto, logo abaixo desta linha, para escrever com a caneta' }); })(),
       btn('speak', 'Ouvir', () => { speak(cleanText(this.sel.text)); }, { cls: 'mbtn lbl' }),
       btn('translate', 'Traduzir', () => { const b2 = this.sel.box; translatePop(cleanText(this.sel.text), b2, this.selDoc()); }, { cls: 'mbtn lbl' }),
       btn('wiki', 'Wikipédia', () => { const b2 = this.sel.box; wikiPop(cleanText(this.sel.text), b2); }, { cls: 'mbtn lbl' }),

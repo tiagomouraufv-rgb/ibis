@@ -91,7 +91,7 @@ export async function syncPageKeys() {
 // desenha os traços guardados e a caneta volta. Menus e janelas por cima também desligam a caneta só por um instante,
 // sem fechar o kit (reabrir o kit é o que deixava a Boox lenta). No fim de cada traço os pontos chegam em window.__fastInk.
 const BLOCKERS = '.modal-back, .popmenu, .article-view, .recentbar, .lookpop, .refpop, .tablepick';
-const FLOATERS = '.selmenu, .pill, .fmtbar, .floatplayer, .ttsbar, .rtop';
+const FLOATERS = '.selmenu, .pill, .fmtbar, .floatplayer, .ttsbar, .rtop, .gapbar, .gapmark';
 const PEN_TOOLS = ['pen', 'marker', 'eraser'];
 export const fastPen = {
   on: false,          // kit aberto (caneta da Boox ativa ou pausada)

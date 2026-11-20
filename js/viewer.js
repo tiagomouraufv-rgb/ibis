@@ -1,7 +1,7 @@
 // Visualizador de PDF: páginas, zoom, escrita com a S Pen, seleção de texto e toques nas anotações.
 import { pdfjs, openPdf, getPage, pageList, pageLinks } from './pdfdoc.js';
 import * as S from './store.js';
-import { h, clear, icon, catInfo, uid } from './util.js';
+import { h, clear, icon, catInfo, uid, toast, confirmBox } from './util.js';
 import { registerTextLayer, unregisterTextLayer } from './textsel.js';
 import { hydrate } from './embeds.js';
 import { nbPageList, isNotebook, fileUrl, fileUrlSync, renderBoxHtml, numbering, TEXT_SIZE, onTaskClick, coverUrl, readingOrder } from './notebook.js';
@@ -188,7 +188,7 @@ export class Viewer {
   listPages() {
     if (isNotebook(this.doc)) return nbPageList(this.doc);
     const pages = pageList(this.doc, this.hd);
-    if (!this.colMode || !this.colLayout) return pages;
+    if (!this.colMode || !this.colLayout) return this.splitGaps(pages);
     // modo artigo: cada página vira suas partes (cabeçalho largo, coluna 1, coluna 2), uma embaixo da outra
     const out = [];
     for (const p of pages) {
@@ -201,6 +201,116 @@ export class Viewer {
     const colW = Math.max(...out.filter(p => p.box && !p.head).map(p => p.w * p.box[2]), 1);
     for (const p of out) if (p.head) p.fit = Math.min(1, colW / (p.w * p.box[2]));
     return out;
+  }
+
+  // ---------- espaço aberto no texto (como o Active Canvas do Kindle Scribe) ----------
+  // doc.gaps: [{ id, page, y, h, collapsed }] (y e h em pontos da página). A página é mostrada em pedaços,
+  // cortada na linha escolhida, e entre os pedaços entra um espaço em branco para escrever (chave 'g' + id).
+  // O escrito fica no meio do texto; recolhido, vira um ícone ✍ na beira da página.
+  gapsOf(n) { return (this.doc && this.doc.gaps || []).filter(g => g.page === n); }
+
+  splitGaps(pages) {
+    if (!(this.doc && this.doc.gaps && this.doc.gaps.length)) return pages;
+    const out = [];
+    for (const p of pages) {
+      const gs = p.kind === 'pdf' ? this.gapsOf(p.n).filter(g => !g.collapsed).sort((a, b) => a.y - b.y) : [];
+      if (!gs.length) { out.push(p); continue; }
+      const cb = this.cropBox || [0, 0, 1, 1];
+      const top = cb[1] * p.h, bot = (cb[1] + cb[3]) * p.h;
+      const ys = [top, ...gs.map(g => Math.max(top, Math.min(bot, g.y))), bot];
+      const n = gs.length + 1;
+      for (let i = 0; i < n; i++) {
+        const y0 = ys[i], y1 = Math.max(ys[i + 1], y0 + 1);
+        out.push(Object.assign({}, p, { sid: i ? p.key + '#g' + i : p.key, box: [cb[0], y0 / p.h, cb[2], (y1 - y0) / p.h], part: i, parts: n, gapPart: true }));
+        if (i < gs.length) {
+          const g = gs[i];
+          out.push({ key: 'g' + g.id, kind: 'blank', gap: g.id, id: g.id, w: p.w, h: g.h, box: [cb[0], 0, cb[2], 1], page: p.n, index: p.index, label: 'espaço para escrever' });
+        }
+      }
+    }
+    return out;
+  }
+
+  // altura da linha do texto tocada: o espaço abre logo abaixo dela (não corta a linha ao meio)
+  async gapSnapY(n, y) {
+    try {
+      const pg = await getPage(this.hd, n);
+      const H = pg.view ? pg.view[3] - pg.view[1] : (this.hd.sizes[n - 1] || {}).h;
+      const tc = await pg.getTextContent();
+      let best = null;
+      for (const it of tc.items) {
+        const t = it.transform; if (!t || !it.str || !it.str.trim()) continue;
+        const fh = Math.hypot(t[2], t[3]) || it.height || 10;
+        const top = H - (t[5] + fh * 0.85), bot = H - (t[5] - fh * 0.28);
+        if (y >= top - 2 && y <= bot + 2) best = Math.max(best || 0, bot);
+      }
+      return best != null ? best + 1.5 : y;
+    } catch (e) { return y; }
+  }
+
+  async openGap(n, y) {
+    if (!this.doc || this.isNb || this.colMode) { toast(this.colMode ? 'Saia do modo artigo para abrir um espaço no texto.' : 'O espaço para escrever é para PDFs e livros.'); return; }
+    const yy = await this.gapSnapY(n, y);
+    const g = { id: uid('g'), page: n, y: +yy.toFixed(1), h: 150, created: Date.now() };
+    this.doc.gaps = [...(this.doc.gaps || []), g];
+    await S.saveDoc(this.doc);
+    this.pages = this.listPages();
+    this.build();
+    const s = this.slots.get('g' + g.id);
+    if (s) this.scroller.scrollTop = Math.max(0, s.wrap.offsetTop - Math.min(220, this.scroller.clientHeight * 0.3));
+    this.app.onNav && this.app.onNav(this);
+    if (this.app.setTool && !['pen', 'marker'].includes(this.app.tool)) this.app.setTool('pen');
+    return g;
+  }
+
+  async gapUpdate(id, patch, opts = {}) {
+    const g = (this.doc.gaps || []).find(x => x.id === id);
+    if (!g) return;
+    Object.assign(g, patch);
+    await S.saveDoc(this.doc);
+    if (opts.inPlace) return g;
+    const keep = this.scroller.scrollTop;
+    this.pages = this.listPages();
+    this.build();
+    this.scroller.scrollTop = keep;
+    return g;
+  }
+
+  async deleteGap(id) {
+    const ink = (this.anns || []).filter(a => a.pageKey === 'g' + id);
+    if (ink.length && !(await confirmBox('Apagar o espaço', 'O que está escrito nele também será apagado.', 'Apagar', true))) return;
+    if (ink.length) await S.delAnnots(ink);
+    this.doc.gaps = (this.doc.gaps || []).filter(g => g.id !== id);
+    await S.saveDoc(this.doc);
+    const keep = this.scroller.scrollTop;
+    this.pages = this.listPages();
+    this.build();
+    this.scroller.scrollTop = keep;
+  }
+
+  // escreveu perto do fim do espaço: ele cresce ali mesmo (sem refazer a tela inteira)
+  growGap(s, pts) {
+    if (!s.p.gap || !pts || !pts.length) return;
+    if (Math.max(...pts.map(q => q[1])) < s.p.h - 28) return;
+    const h2 = s.p.h + 120;
+    s.p.h = h2;
+    this.sizeSlot(s);
+    if (!fastPen.holding(this)) this.drawOverlay(s);
+    this.gapUpdate(s.p.gap, { h: h2 }, { inPlace: true });
+  }
+
+  // ícones ✍ dos espaços recolhidos (e de todos, no modo artigo) na beira da página
+  drawGapMarks(s) {
+    for (const m of s.slot.querySelectorAll('.gapmark')) m.remove();
+    if (s.p.kind !== 'pdf' || !this.doc || !this.doc.gaps) return;
+    const k = this.k(s);
+    for (const g of this.gapsOf(s.p.n)) {
+      if (!g.collapsed && !this.colMode) continue;
+      const b = h('button.gapmark', { type: 'button', title: 'Abrir o escrito deste trecho', 'aria-label': 'Abrir o escrito', style: { left: (s.p.w * k - 30) + 'px', top: (g.y * k - 15) + 'px' } }, '✍');
+      b.addEventListener('pointerdown', e => e.stopPropagation());
+      b.addEventListener('click', e => { e.stopPropagation(); if (this.colMode) { toast('Saia do modo artigo para ver o escrito no texto.'); return; } this.gapUpdate(g.id, { collapsed: false }); });
+      s.slot.appendChild(b);
+    }
   }
 
   async docCrop() { const id = this.doc.id; const b = cropCache.get(id) || await detectCrop(this.hd); cropCache.set(id, b); return b; }
@@ -277,6 +387,17 @@ export class Viewer {
       const wrap = h('div.slotwrap', head, clip);
       wrap.dataset.key = p.sid || p.key;
       slot.dataset.key = p.key;
+      // página cortada por um espaço aberto: os pedaços ficam colados, como uma página só
+      if (p.gapPart) { if (p.part > 0) wrap.classList.add('cont'); if (p.part < p.parts - 1) wrap.classList.add('contnext'); }
+      if (p.gap) {
+        wrap.classList.add('cont', 'contnext', 'gapwrap');
+        pg.classList.add('gappg');
+        const gb = (ic, label, fn) => { const b = h('button.ibtn.small', { type: 'button', title: label, 'aria-label': label }, icon(ic, 16)); b.addEventListener('pointerdown', e => e.stopPropagation()); b.addEventListener('click', e => { e.stopPropagation(); fn(); }); return b; };
+        wrap.appendChild(h('div.gapbar',
+          gb('plus', 'Mais espaço', () => this.gapUpdate(p.gap, { h: p.h + 150 })),
+          gb('collapse', 'Recolher (fica um ✍ na beira da página)', () => this.gapUpdate(p.gap, { collapsed: true })),
+          gb('trash', 'Apagar o espaço e o escrito', () => this.deleteGap(p.gap))));
+      }
       this.pagesEl.appendChild(wrap);
       const s = { p, wrap, slot, clip, pg, mg, svg, live, head, tbl, iml, rendered: 0, renderTask: null };
       this.slots.set(p.sid || p.key, s);
@@ -293,6 +414,7 @@ export class Viewer {
 
   // escreveu perto do fim da última página do caderno: já cria a próxima (como um caderno sem fim)
   maybeAutoPage(s, pts) {
+    if (s && s.p && s.p.gap) { this.growGap(s, pts); return; }
     if (!this.isNb || this.autoAdding || !pts || !pts.length) return;
     const last = this.pages[this.pages.length - 1];
     if (!last || s.p.key !== last.key || last.tpl === 'cover') return;
@@ -501,6 +623,7 @@ export class Viewer {
   annsOf(key) { return (this.anns || []).filter(a => a.pageKey === key); }
 
   drawOverlay(s) {
+    this.drawGapMarks(s);
     const g = s.svg.querySelector('g.ann');
     clear(g);
     const list = this.annsOf(s.p.key);
@@ -1055,6 +1178,7 @@ export class Viewer {
         return;
       }
       if (tool === 'note') { this.op = { type: 'note', s: hit.s, x: hit.x, y: hit.y, id: e.pointerId }; return; }
+      if (tool === 'gap') { this.op = { type: 'gap', s: hit.s, x: hit.x, y: hit.y, id: e.pointerId }; return; }
       if (tool === 'lasso') {
         const path = sv('path', { class: 'lassop', d: '' });
         hit.s.live.appendChild(path);
@@ -1220,6 +1344,8 @@ export class Viewer {
         }
       } else if (op.type === 'note') {
         this.app.noteAt(this, op.s.p.key, op.x, op.y, e.clientX, e.clientY);
+      } else if (op.type === 'gap') {
+        if (op.s.p.kind === 'pdf') this.openGap(op.s.p.n, op.y);
       } else if (op.type === 'lasso') {
         op.path.remove();
         const tap = op.pts.length <= 4 || Math.max(...op.pts.map(p => Math.hypot(p[0] - op.pts[0][0], p[1] - op.pts[0][1]))) < 6 / this.k(op.s);
