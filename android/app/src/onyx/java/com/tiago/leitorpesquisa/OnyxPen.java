@@ -50,10 +50,20 @@ final class OnyxPen {
         return ok;
     }
 
-    void start(Rect limit, List<Rect> exclude, float width) {
+    // estilo do traço que a Boox desenha na hora: "pencil" (lápis), "fountain" (tinteiro, varia com a pressão)
+    // ou "marker" (marca-texto). O marca-texto é procurado pelo nome, porque nem toda versão do kit tem.
+    private static int styleOf(String s) {
+        if ("fountain".equals(s)) return TouchHelper.STROKE_STYLE_FOUNTAIN;
+        if ("marker".equals(s)) {
+            try { return TouchHelper.class.getField("STROKE_STYLE_MARKER").getInt(null); } catch (Throwable ignored) { }
+        }
+        return TouchHelper.STROKE_STYLE_PENCIL;
+    }
+
+    void start(Rect limit, List<Rect> exclude, float width, String style) {
         if (helper == null) helper = TouchHelper.create(view, callback);
         helper.setStrokeWidth(width);
-        helper.setStrokeStyle(TouchHelper.STROKE_STYLE_PENCIL);
+        helper.setStrokeStyle(styleOf(style));
         helper.setLimitRect(limit, exclude);
         if (!open) { helper.openRawDrawing(); open = true; }
         helper.setRawDrawingEnabled(true);

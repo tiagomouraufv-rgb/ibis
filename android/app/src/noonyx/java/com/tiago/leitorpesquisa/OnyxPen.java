@@ -13,7 +13,7 @@ final class OnyxPen {
 
     static boolean available() { return false; }
 
-    void start(Rect limit, List<Rect> exclude, float width) { throw new IllegalStateException("caneta rápida não incluída nesta compilação"); }
+    void start(Rect limit, List<Rect> exclude, float width, String style) { throw new IllegalStateException("caneta rápida não incluída nesta compilação"); }
 
     void enable(boolean on) { }
 

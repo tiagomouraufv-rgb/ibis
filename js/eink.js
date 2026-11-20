@@ -106,7 +106,9 @@ export const fastPen = {
       .map(e => e.getBoundingClientRect()).filter(b => b.width && b.height && b.bottom > rc.top && b.top < rc.bottom && b.right > rc.left && b.left < rc.right)
       .map(b => [b.left, b.top, b.right, b.bottom]);
     const w = (r.tool === 'marker' ? 11 : (st.penWidth || 2)) * v.scale;
-    const json = JSON.stringify({ l: Math.round(rc.left), t: Math.round(rc.top), r: Math.round(rc.right), b: Math.round(rc.bottom), ex: ex.map(q => q.map(Math.round)), w: +w.toFixed(1) });
+    // estilo do traço desenhado pela Boox: lápis ou tinteiro (Configurações); o marca-texto usa o da Boox
+    const s = r.tool === 'marker' ? 'marker' : (st.booxPenStyle === 'fountain' ? 'fountain' : 'pencil');
+    const json = JSON.stringify({ l: Math.round(rc.left), t: Math.round(rc.top), r: Math.round(rc.right), b: Math.round(rc.bottom), ex: ex.map(q => q.map(Math.round)), w: +w.toFixed(1), s });
     if (this.on && json === this.last) return;   // nada mudou: não reinicia a caneta (deixava a Boox lenta)
     try { N.penStart(json); this.on = true; this.last = json; } catch (e) { this.fail(String(e)); }
   },

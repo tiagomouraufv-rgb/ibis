@@ -801,7 +801,7 @@ public class MainActivity extends Activity {
                 ex.add(new Rect(Math.round((float) q.getDouble(0) * d), Math.round((float) q.getDouble(1) * d), Math.round((float) q.getDouble(2) * d), Math.round((float) q.getDouble(3) * d)));
             }
             if (pen == null) pen = new OnyxPen(web, s -> js("window.__fastInk&&window.__fastInk(" + JSONObject.quote(s) + ")"), d);
-            pen.start(lim, ex, (float) o.optDouble("w", 2) * d);
+            pen.start(lim, ex, (float) o.optDouble("w", 2) * d, o.optString("s", "pencil"));
         } catch (Throwable t) {
             pen = null;
             js("window.__fastPenFailed&&window.__fastPenFailed(" + JSONObject.quote(String.valueOf(t)) + ")");
