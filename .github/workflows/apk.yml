@@ -56,7 +56,17 @@ jobs:
           fi
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 300000 -in leitor-release.p12.enc -out "$RUNNER_TEMP/leitor.p12" -pass env:LEITOR_KEYSTORE_PASS
           export LEITOR_KEYSTORE="$RUNNER_TEMP/leitor.p12"
-          ./gradlew --no-daemon assembleRelease -Ponyx=true
+          set +e
+          ./gradlew --no-daemon assembleRelease -Ponyx=true > "$RUNNER_TEMP/build.log" 2>&1
+          rc=$?
+          set -e
+          tail -n 80 "$RUNNER_TEMP/build.log"
+          if [ $rc -ne 0 ]; then
+            # o motivo do erro vira um aviso visível na página da execução
+            msg=$(grep -E "error:|What went wrong|Could not|> .*[Ff]ailed|Caused by|not found|cannot find symbol|symbol: " "$RUNNER_TEMP/build.log" | head -n 25 | sed 's/%/%25/g' | tr '\n' '|')
+            echo "::error::Falhou ao compilar: $msg"
+            exit $rc
+          fi
           rm -f "$LEITOR_KEYSTORE"
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Leitor-${{ steps.v.outputs.ver }}.apk"
       - name: Publicar o APK (aba Releases)
