@@ -14,6 +14,13 @@ def ksPass = System.getenv('LEITOR_KEYSTORE_PASS')
 def hasKey = ksPath && ksPass && new File(ksPath).exists()
 
 android {
+    // o kit da caneta da Onyx e as bibliotecas que ele usa trazem, cada um, a mesma biblioteca nativa do C++:
+    // o APK leva uma só
+    packaging {
+        jniLibs {
+            pickFirsts += ['**/libc++_shared.so']
+        }
+    }
     namespace 'com.tiago.leitorpesquisa'
     compileSdk 36
 
