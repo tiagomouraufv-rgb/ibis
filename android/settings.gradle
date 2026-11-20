@@ -11,11 +11,17 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         // Repositório da Onyx (Boox), endereço publicado pela própria Onyx. Ele usa http (sem cadeado),
-        // por isso fica restrito: o Gradle só busca nele as bibliotecas com.onyx, nada mais.
+        // por isso fica restrito: o Gradle só busca nele as bibliotecas listadas abaixo, nada mais.
         maven {
             url 'http://repo.boox.com/repository/maven-public/'
             allowInsecureProtocol = true
-            content { includeGroupByRegex 'com\\.onyx.*' }
+            // além das bibliotecas da Onyx, as que o kit da caneta (1.5.x) usa e só existem nesse repositório
+            content {
+                includeGroupByRegex 'com\\.onyx.*'
+                includeGroup 'pub.devrel'
+                includeGroup 'com.tencent'
+                includeGroupByRegex 'com\\.jakewharton\\.hugo.*'
+            }
         }
     }
 }
